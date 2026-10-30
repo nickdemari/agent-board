@@ -44,7 +44,8 @@ const INK = '#222034'
 
 const TUNICS = ['#5B6EE1', '#DF7126', '#D77BBA', '#37946E', '#FBF236', '#639BFF', '#76428A', '#8F563B'] as const
 
-const tunicOf = (seat: number): string => TUNICS[seat % TUNICS.length] ?? TUNICS[0]
+const tunicOf = (actor: Pick<Actor, 'kind' | 'seat'>): string =>
+  actor.kind === 'main' ? '#D95763' : (TUNICS[actor.seat % TUNICS.length] ?? TUNICS[0])
 
 type Grid = readonly string[]
 
@@ -106,9 +107,23 @@ const paint = (grid: Grid): string => {
 }
 
 // What an agent wears says what kind of agent it is. E and e are its eyes, which poses change.
-type Costume = 'knight' | 'ranger' | 'wizard' | 'rogue'
+type Costume = 'captain' | 'knight' | 'ranger' | 'wizard' | 'rogue'
 
 const HEADS: Readonly<Record<Costume, Grid>> = {
+  // The main agent, who sent the rest out.
+  captain: [
+    '............',
+    '............',
+    '...g..g..g..',
+    '...ggggggg..',
+    '...grgggrg..',
+    '..kbbbbbbbk.',
+    '..kbbbbbbbk.',
+    '..ksssEsEsk.',
+    '..ksssesesk.',
+    '..ksssssssk.',
+    '...kkkkkkk..',
+  ],
   knight: [
     '......rr....',
     '.....rrr....',
@@ -164,6 +179,10 @@ const HEADS: Readonly<Record<Costume, Grid>> = {
 }
 
 const costumeOf = (kind: string): Costume => {
+  if (kind === 'main') {
+    return 'captain'
+  }
+
   if (kind === 'Explore' || kind === 'scout') {
     return 'ranger'
   }
@@ -481,7 +500,7 @@ const spotOf = (actor: Actor, width: number, height: number, homeRank: number): 
 
 const drawActor = (actor: Actor, width: number, height: number, cast: Cast, homeRank: number): string => {
   const costume = costumeOf(actor.kind)
-  const color = actor.status === 'killed' || actor.status === 'gone' ? '#847E87' : tunicOf(actor.seat)
+  const color = actor.status === 'killed' || actor.status === 'gone' ? '#847E87' : tunicOf(actor)
   const feet = footing(height, actor.seat)
   const y = feet - SPRITE_HEIGHT
   const sprite = (pose: string, grid: readonly string[]): string =>
@@ -675,7 +694,7 @@ const drawBubbles = (bubbles: readonly Bubble[], height: number, cast: Cast): { 
       fill(edge, rect(1, 0, bubble.width - 2, bubble.height) + rect(0, 1, bubble.width, bubble.height - 2)) +
         fill('#FFFFFF', rect(1, 1, bubble.width - 2, bubble.height - 2)) +
         // Its tunic's color down the side, which says whose it is when bubbles stack.
-        fill(tunicOf(bubble.actor.seat), rect(1, 1, 2, bubble.height - 2)) +
+        fill(tunicOf(bubble.actor), rect(1, 1, 2, bubble.height - 2)) +
         bubble.lines.map((line, i) => `<g color="${INK}" transform="translate(${PADDING_X} ${2 + i * LINE_HEIGHT})">${lettered(line, cast)}</g>`).join('') +
         `<g color="${isBad ? '#AC3232' : '#595652'}" transform="translate(${PADDING_X} ${2 + bubble.lines.length * LINE_HEIGHT})">${lettered(bubble.words, cast)}</g>`,
     )

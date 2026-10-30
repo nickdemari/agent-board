@@ -26,6 +26,9 @@ export type BoardAgent = {
   isCleared: boolean
 }
 
+/** One step of the main agent's own task list. */
+export type PlanStep = { content: string; status: string }
+
 declare module 'claude-code' {
   interface PluginState {
     'agent-board': {
@@ -34,6 +37,7 @@ declare module 'claude-code' {
       /** The latest step of each agent, which only the terminal's rows read: the scene must not redraw for a step. */
       steps: Record<string, string>
       isExpanded: boolean
+      plan: PlanStep[]
     }
   }
 }

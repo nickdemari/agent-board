@@ -28,6 +28,8 @@ const world = (on: On) => {
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('agent.list', () => ({ value: roster }))
   on('prompt.submit', (_$, e) => ({ text: e.text }))
+  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('tool.call', () => ({ result: 'ok' }))
   on('tool.register', (_$, e) => ({ value: { tool: `mcp__agent-board__${e.name}` } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
@@ -476,6 +478,97 @@ test('fill screen opens the big scene and the band stands aside', async ($, on) 
   expect(await says(text, 'desktop app')).toBe(true)
   await text.unmount()
   await band.unmount()
+})
+
+const WORKING = { ...BAND, props: { ...BAND.props, isWorking: true } } as const
+const finished = ($: Engine, turnId: string) =>
+  $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: false, turnId, reason: 'answer' })
+
+test('the main agent is on the board while its turn runs, and only then', async ($, on) => {
+  const { clock } = world(on)
+  await begin($)
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+
+  const ui = await $.ui.mount({ ...WORKING, surface: 'desktop' })
+  expect(await says(ui, 'Claude: Working')).toBe(true)
+  expect(await says(ui, 'No agents running')).toBe(false)
+  expect(await sceneIn(ui)).toContain('crispEdges')
+  await ui.unmount()
+
+  await clock.advance(POLL)
+  await finished($, 't1')
+
+  const after = await $.ui.mount({ ...WORKING, surface: 'desktop' })
+  expect(await says(after, 'No agents running')).toBe(true)
+  await after.unmount()
+})
+
+test('a band that says the turn is over leaves the main agent out, whatever the board holds', async ($, on) => {
+  world(on)
+  await begin($)
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'No agents running')).toBe(true)
+  await ui.unmount()
+})
+
+test('its task list gives it a percent and a thought', async ($, on) => {
+  world(on)
+  await begin($)
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await $.tool.call({
+    tool: 'mcp__ccd_turn__update_plan',
+    tool_use_id: 'p1',
+    items: [
+      { content: 'Read the code', status: 'completed' },
+      { content: 'Write the fix', status: 'in_progress' },
+      { content: 'Run the tests', status: 'pending' },
+      { content: 'Ship it', status: 'pending' },
+    ],
+  } as never)
+
+  const ui = await $.ui.mount({ ...WORKING, surface: 'desktop' })
+  expect(await says(ui, /25%/)).toBe(true)
+  expect(await says(ui, 'thinking \\"Write the fix\\"')).toBe(true)
+
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', tool_use_id: 'p2', advance: true } as never)
+  expect(await says(ui, /50%/)).toBe(true)
+  expect(await says(ui, 'thinking \\"Run the tests\\"')).toBe(true)
+  await ui.unmount()
+})
+
+test('with no task list its thought is its latest step, changed no more than every few seconds', async ($, on) => {
+  const { clock } = world(on)
+  await begin($)
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/a/login.ts' })
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...WORKING, surface: 'desktop' })
+  expect(await says(ui, 'thinking \\"Reading login.ts\\"')).toBe(true)
+
+  const before = await sceneIn(ui)
+
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u2', file_path: '/a/logout.ts' })
+  await clock.advance(POLL)
+  expect(await sceneIn(ui)).toBe(before)
+
+  await clock.advance(10_000)
+  expect(await says(ui, 'thinking \\"Reading logout.ts\\"')).toBe(true)
+  await ui.unmount()
+})
+
+test('a task list call is not a step, and a mod loaded mid-turn still finds the main agent', async ($, on) => {
+  const { clock } = world(on)
+  await begin($)
+  await $.tool.call({ tool: 'ToolSearch', tool_use_id: 'u1', query: 'x', max_results: 1 } as never)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...WORKING, surface: 'desktop' })
+  expect(await says(ui, 'Claude: Working')).toBe(true)
+  expect(await says(ui, 'thinking')).toBe(false)
+  await ui.unmount()
 })
 
 test('a survey holds the band: the board yields to it', async ($, on) => {

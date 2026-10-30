@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { BoardAgent, BoardStatus } from '../types'
+import type { BoardAgent, BoardStatus, PlanStep } from '../types'
 
 import { altOf, campfire, sceneOf } from './scene'
 import type { Actor } from './scene'
@@ -9,10 +9,18 @@ import type { Actor } from './scene'
 const POLL_MS = 2000
 const MINUTE_MS = 60_000
 const NOW_MS = 15_000
+// The main agent's steps come fast, and each new thought redraws the scene: no more than this often.
+const THOUGHT_MS = 8000
 // Rows under the summary, the `+n more` row included.
 const MAX_ROWS = 4
 
 const PANE = 'agent-board'
+// The main agent has no id in the engine's list, so the board keeps it under this one.
+const MAIN = 'main'
+// Its task list, which is where its percent comes from.
+const PLAN_TOOLS = new Set(['mcp__ccd_turn__update_plan', 'TodoWrite'])
+// Housekeeping, which is nothing it would say it was doing.
+const QUIET = /^mcp__ccd_turn__|^ToolSearch$|mark_chapter$|^TodoWrite$/
 const PROGRESS_TOOL = 'mcp__agent-board__progress'
 // The engine knows nothing of how far along an agent is, so each agent is asked to say.
 const PROGRESS_ASK = `
@@ -26,6 +34,7 @@ const agents = atom({ plugin: 'agent-board', key: 'agents' } as const, [], { sha
 const now = atom({ plugin: 'agent-board', key: 'now' } as const, 0)
 const steps = atom({ plugin: 'agent-board', key: 'steps' } as const, {})
 const isExpanded = atom({ plugin: 'agent-board', key: 'isExpanded' } as const, false)
+const plan = atom({ plugin: 'agent-board', key: 'plan' } as const, [])
 
 type Look = { glyph: string; word: string; color?: 'claude' | 'warning' | 'success' | 'error' }
 
@@ -185,6 +194,75 @@ const rankedOf = (board: readonly BoardAgent[]): BoardAgent[] =>
       ORDER.indexOf(a.status) - ORDER.indexOf(b.status) || (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt),
   )
 
+const mainAt = (at: number): BoardAgent => ({
+  id: MAIN,
+  label: 'Claude',
+  kind: 'main',
+  seat: -1,
+  status: 'running',
+  thought: '',
+  left: '',
+  done: 0,
+  total: 0,
+  from: null,
+  isFresh: false,
+  startedAt: at,
+  endedAt: null,
+  isCleared: false,
+})
+
+/** The task list after one call of the tool that keeps it: a whole new list, or the steps it moved. */
+const planAfter = (steps: readonly PlanStep[], input: Readonly<Record<string, unknown>>): PlanStep[] => {
+  const listed = input.items ?? input.todos
+
+  if (Array.isArray(listed)) {
+    return listed.map((item: { content?: unknown; status?: unknown }) => ({
+      content: String(item.content ?? ''),
+      status: String(item.status ?? 'pending'),
+    }))
+  }
+
+  const done = Array.isArray(input.done) ? input.done.map(Number) : []
+  const started = typeof input.start === 'number' ? input.start : null
+  const moved = steps.map((step, i) => {
+    if (done.includes(i + 1)) {
+      return { ...step, status: 'completed' }
+    }
+
+    return started === i + 1 ? { ...step, status: 'in_progress' } : step
+  })
+
+  if (input.advance !== true) {
+    return moved
+  }
+
+  const finished = moved.map(step => (step.status === 'in_progress' ? { ...step, status: 'completed' } : step))
+  const next = finished.findIndex(step => step.status === 'pending')
+
+  return finished.map((step, i) => (i === next ? { ...step, status: 'in_progress' } : step))
+}
+
+/** One agent's report folded into the board. Only a bubble or place that changed redraws the scene, and then nobody else's move plays twice. */
+const reported = (list: readonly BoardAgent[], id: string, done: number, total: number, thought: string, at: number): BoardAgent[] => {
+  const mover = list.find(one => one.id === id)
+
+  if (mover === undefined) {
+    return [...list]
+  }
+
+  const moved = { ...mover, done, total, thought: thought || mover.thought }
+  const told = { ...moved, left: leftOf(moved, at) }
+  const hasChanged = reportedOf(mover) !== reportedOf(told) || mover.thought !== told.thought || mover.left !== told.left
+
+  return list.map(one => {
+    if (one.id === id) {
+      return hasChanged ? { ...told, from: reportedOf(one), isFresh: false } : told
+    }
+
+    return hasChanged ? settled(one) : one
+  })
+}
+
 /**
  * The engine's list folded into the board. The list drops an agent soon after it ends, and the
  * board keeps it: a failure must still be here when he looks.
@@ -193,6 +271,11 @@ const merged = (board: readonly BoardAgent[], listed: readonly AgentInfo[], at: 
   const byId = new Map(listed.map(info => [info.id, info]))
   const known = new Set(board.map(one => one.id))
   const kept = board.flatMap((one): BoardAgent[] => {
+    // Never in the engine's list: its turn says when it comes and goes.
+    if (one.id === MAIN) {
+      return [one]
+    }
+
     const info = byId.get(one.id)
 
     if (info === undefined) {
@@ -249,6 +332,8 @@ const merged = (board: readonly BoardAgent[], listed: readonly AgentInfo[], at: 
   return next.map(one => ({ ...settled(one), isFresh: one.status === 'completed' && before.get(one.id) !== 'completed' }))
 }
 
+let thoughtAt = 0
+
 /** One poll. It writes only what changed, so a quiet session never redraws the band. */
 const sync = async ($: EngineInterface): Promise<void> => {
   const at = await $.clock.now()
@@ -261,6 +346,15 @@ const sync = async ($: EngineInterface): Promise<void> => {
 
   if (at - (await read($, now)) >= NOW_MS) {
     await update($, now, () => at)
+  }
+
+  // A task list says what the main agent is on. Without one, its latest step does, now and then.
+  const main = board.find(one => one.id === MAIN)
+  const step = (await read($, steps))[MAIN] ?? ''
+
+  if (main !== undefined && main.total === 0 && step !== '' && step !== main.thought && at - thoughtAt >= THOUGHT_MS) {
+    thoughtAt = at
+    await update($, agents, list => reported(list, MAIN, 0, 0, step, at))
   }
 }
 
@@ -337,6 +431,26 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const at = await $.clock.now()
+
+      await update($, plan, () => [])
+      await update($, steps, known => ({ ...known, [MAIN]: '' }))
+      await update($, agents, list => [mainAt(at), ...list.filter(one => one.id !== MAIN).map(settled)])
+    }
+
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      await update($, agents, list => list.filter(one => one.id !== MAIN).map(settled))
+    }
+
+    return next(e)
+  })
+
   on('command.run', { command: 'agent-board' }, async $ => {
     await expand($)
 
@@ -368,34 +482,42 @@ export const register: Register = on => {
         const doing = typeof input.doing === 'string' ? clip(input.doing, 40) : ''
         const step = (await read($, steps))[id] ?? ''
 
-        await update($, agents, list => {
-          const mover = list.find(one => one.id === id)
-
-          if (mover === undefined) {
-            return list
-          }
-
-          const moved = { ...mover, done, total, thought: doing || step || mover.thought }
-          const told = { ...moved, left: leftOf(moved, at) }
-          const hasChanged =
-            reportedOf(mover) !== reportedOf(told) || mover.thought !== told.thought || mover.left !== told.left
-
-          // Only an agent whose bubble or place changed redraws the scene, and then nobody else's move plays twice.
-          return list.map(one => {
-            if (one.id === id) {
-              return hasChanged ? { ...told, from: reportedOf(one), isFresh: false } : told
-            }
-
-            return hasChanged ? settled(one) : one
-          })
-        })
+        await update($, agents, list => reported(list, id, done, total, doing || step, at))
       }
 
       return { result: 'Noted.' }
     }
 
+    const isQuiet = QUIET.test(String(e.tool))
+
+    if (id === undefined) {
+      const at = await $.clock.now()
+
+      // A mod loaded in the middle of a turn never saw that turn start.
+      if (!(await read($, agents)).some(one => one.id === MAIN)) {
+        await update($, agents, list => [mainAt(at), ...list])
+      }
+
+      if (PLAN_TOOLS.has(String(e.tool))) {
+        const input: Readonly<Record<string, unknown>> = e
+        const after = planAfter(await read($, plan), input)
+        const active = after.find(step => step.status === 'in_progress')
+
+        await update($, plan, () => after)
+        await update($, agents, list =>
+          reported(list, MAIN, after.filter(step => step.status === 'completed').length, after.length, clip(active?.content ?? '', 40), at),
+        )
+      } else if (!isQuiet) {
+        const step = stepOf(e.tool, e)
+
+        await update($, steps, known => ({ ...known, [MAIN]: step }))
+      }
+
+      return next(e)
+    }
+
     // Forks and compactions call tools under ids the list never names: not his agents.
-    if (id !== undefined && (await read($, agents)).some(one => one.id === id)) {
+    if (!isQuiet && (await read($, agents)).some(one => one.id === id)) {
       const step = stepOf(e.tool, e)
 
       await update($, steps, known => ({ ...known, [id]: step }))
@@ -410,7 +532,7 @@ export const register: Register = on => {
     }
 
     const { Box, Text } = $.ui.resolve(e)
-    const board = (await read($, agents)).filter(one => !one.isCleared)
+    const board = (await read($, agents)).filter(one => !one.isCleared && (one.id !== MAIN || e.props.isWorking))
 
     if (e.surface === 'desktop') {
       const { Button, Svg } = $.ui.resolve(e)

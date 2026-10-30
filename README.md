@@ -9,7 +9,7 @@ A Claude Code mod that turns a session's subagents into a small pixel-art party 
 - **How far along:** an agent stands as far down the path as its percent done.
 - **What it's doing:** each agent has a thought bubble with what it says it's on, its percent and the time left.
 - **Its status is its pose:** walking, sitting while it waits, asleep when idle, or knocked out under a storm cloud when it fails. Failures stay on the board until your next prompt.
-- **What kind of agent:** the outfit shows the type. A knight is general-purpose, a ranger is Explore or scout, a wizard is Plan, and a bandana is anything else.
+- **What kind of agent:** the outfit shows the type. The crown is the main agent, a knight is general-purpose, a ranger is Explore or scout, a wizard is Plan, and a bandana is anything else.
 - **Finishing:** it hops at the flag and gets one burst of confetti.
 - **Fill screen:** the button on the scene, or `/agent-board`, opens it in a pane with a taller sky. Mods can't cover the whole window, so a pane is as large as it gets.
 
@@ -19,7 +19,7 @@ With no agents running, the band shrinks to a campfire and one line. In a termin
 
 Claude Code doesn't track how far along an agent is, so the mod asks. It adds one sentence to each new agent's brief and a small `progress` tool, and agents report their steps and what they're doing.
 
-- **Percent** is steps finished out of steps the agent expects, by its own count.
+- **Percent** is steps finished out of steps the agent expects, by its own count. For the main agent it comes from its task list, when it keeps one.
 - **Time left** is a straight-line estimate from how long the finished steps took. It updates when the agent reports and doesn't tick in between.
 - **An agent that can't or doesn't report**, such as one with a fixed tool list, paces around camp instead of walking toward the flag, because nobody knows how far along it is.
 
