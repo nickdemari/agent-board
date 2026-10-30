@@ -4,6 +4,8 @@ import type { AgentInfo, On } from 'claude-code'
 
 const START = 1_700_000_000_000
 const POLL = 2000
+// How long what agents are up to can wait to reach the scene, and a poll to let it through.
+const ACTIVITY = 8000
 
 const BAND = {
   plugin: 'agent-board',
@@ -409,37 +411,71 @@ test('a step or the clock leaves the scene alone, so its animation keeps running
   await ui.unmount()
 })
 
-test('an agent walks to its new place on the drawing that moves it, and only that one', async ($, on) => {
+test('an agent running a command walks to the copier on the drawing that sees it go, and only that one', async ($, on) => {
   const { clock, roster } = world(on)
   await begin($)
   roster.push(agent('a1', 'Mover', 'running'), agent('a2', 'Other', 'running'))
   await clock.advance(POLL)
-  await reported($, 'a1', 0, 4)
-  await reported($, 'a2', 0, 4)
-  await reported($, 'a1', 1, 4)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await sceneIn(ui)).toContain('fill=\\"freeze\\"')
+  expect(await sceneIn(ui)).not.toContain('fill=\\"freeze\\"')
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'u1', command: 'npm test', description: 'Running the tests', agentId: 'a1' })
+  await clock.advance(ACTIVITY)
+  expect((await sceneIn(ui)).match(/fill=\\"freeze\\"/g)?.length).toBe(1)
 
   await reported($, 'a2', 1, 4)
-  expect((await sceneIn(ui)).match(/fill=\\"freeze\\"/g)?.length).toBe(1)
+  await clock.advance(ACTIVITY)
+  expect(await sceneIn(ui)).not.toContain('fill=\\"freeze\\"')
   await ui.unmount()
 })
 
-test('the party is for the drawing that sees it finish', async ($, on) => {
+test('what agents are up to reaches the scene every few seconds, and someone finishing does at once', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  const finishing = agent('a2', 'Finisher', 'running')
+  roster.push(agent('a1', 'Worker', 'running'), finishing)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const before = await sceneIn(ui)
+
+  await reported($, 'a1', 1, 4, 'Hunting the stale token')
+  expect(await sceneIn(ui)).toBe(before)
+  // The words for anyone who cannot see the scene never wait.
+  expect(await says(ui, 'thinking \\"Hunting the stale token\\"')).toBe(true)
+
+  await clock.advance(ACTIVITY)
+  const told = await sceneIn(ui)
+  expect(told).not.toBe(before)
+
+  finishing.status = 'completed'
+  await clock.advance(POLL)
+  expect(await sceneIn(ui)).not.toBe(told)
+  await ui.unmount()
+})
+
+test('a finished report flies to the pile on the drawing that sees it finish, and the last one gets the party', async ($, on) => {
   const { clock, roster } = world(on)
   await begin($)
   const one = agent('a1', 'Finisher', 'running')
-  roster.push(one, agent('a2', 'Other', 'running'))
+  const other = agent('a2', 'Other', 'running')
+  roster.push(one, other)
   await clock.advance(POLL)
   one.status = 'completed'
   await clock.advance(POLL)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  expect(await sceneIn(ui)).toContain('dur=\\"1.2s\\"')
+  expect(await sceneIn(ui)).toContain('dur=\\"2s\\"')
+  expect(await sceneIn(ui)).not.toContain('dur=\\"1.2s\\"')
 
   await reported($, 'a2', 1, 4)
-  expect(await sceneIn(ui)).not.toContain('dur=\\"1.2s\\"')
+  await clock.advance(ACTIVITY)
+  expect(await sceneIn(ui)).not.toContain('dur=\\"2s\\"')
+
+  other.status = 'completed'
+  await clock.advance(POLL)
+  expect(await sceneIn(ui)).toContain('dur=\\"1.2s\\"')
   await ui.unmount()
 })
 
@@ -548,7 +584,9 @@ test('a workflow run is on the board as one squad, though the list never names i
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await says(ui, 'No agents running')).toBe(false)
   expect(await says(ui, 'review changes: 0/2 done')).toBe(true)
-  expect(await says(ui, 'Step 1')).toBe(false)
+  // Too many to read out one by one, but each one's cubicle says when hovered.
+  expect((await frameIn(ui)).source).toContain('<title>Step 1')
+  expect(JSON.stringify(await ui.findAll({ type: 'Text' }))).not.toContain('Step 1')
   expect(prompts).toEqual(['Review it.', 'Review it.'])
   await ui.unmount()
 })
@@ -645,7 +683,7 @@ test('his next prompt clears a run with nothing left running, and leaves a runni
   await ui.unmount()
 })
 
-test('past what the path holds, the rest fold into one squad, and a full path is left alone', async ($, on) => {
+test('past twelve the rest are counted, and nobody is left out of the scene', async ($, on) => {
   const { clock, roster } = world(on)
   await begin($)
   roster.push(...Array.from({ length: 12 }, (_, n) => agent(`a${n}`, `Task ${n}`, 'running')))
@@ -653,11 +691,66 @@ test('past what the path holds, the rest fold into one squad, and a full path is
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await says(ui, 'more agents')).toBe(false)
+  expect((await frameIn(ui)).source).toContain('<title>Task 11')
 
   roster.push(...Array.from({ length: 8 }, (_, n) => agent(`b${n}`, `Other ${n}`, 'running')))
   await clock.advance(POLL)
-  expect(await says(ui, '9 more agents: 0/9 done')).toBe(true)
+  expect(await says(ui, 'and 8 more agents')).toBe(true)
+  expect((await frameIn(ui)).source).toContain('<title>Other 7')
   await ui.unmount()
+})
+
+test('a script names its stages: each is a department, and agents join theirs by label, or by when they start', async ($, on) => {
+  const { clock } = world(on)
+  spawning(on)
+  await begin($)
+  const script = `wf_s export const meta = { name: 'x', phases: [{ title: 'Find', detail: 'look around' }, { title: 'Verify', detail: 'check it' }, { title: 'Ship' }] }`
+  await launched($, script)
+  await startedIn($, script, 1, 'find:routes')
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'review changes, Find: 0/1 done')).toBe(true)
+
+  await startedIn($, script, 2, 'verify:0')
+  expect(await says(ui, 'review changes, Verify: 0/1 done')).toBe(true)
+
+  // No labels to go by: everyone before it had finished, so this is the script's next stage.
+  const unlabeled = `wf_w export const meta = { phases: [{ title: 'Find' }, { title: 'Verify' }] }`
+  await launched($, unlabeled)
+  await startedIn($, unlabeled, 1, 'one task')
+  await ended($, `${unlabeled}-1`)
+  await startedIn($, unlabeled, 2, 'another task')
+  expect(await says(ui, 'review changes, Verify: 0/1 done')).toBe(true)
+  await ui.unmount()
+})
+
+test('however big the run, both views stay under what a surface will take', async ($, on) => {
+  const { clock } = world(on)
+  spawning(on)
+  await begin($)
+  const script = `wf_big export const meta = { phases: [{ title: 'Find', detail: 'look around' }, { title: 'Verify', detail: 'check it' }] }`
+  await launched($, script)
+
+  for (let n = 1; n <= 600; n += 1) {
+    await startedIn($, script, n, n <= 100 ? `find:${n}` : `verify:${n}`)
+
+    if (n < 585) {
+      await ended($, `${script}-${n}`, n % 50 === 0 ? 'error' : 'answer')
+    }
+  }
+
+  await clock.advance(POLL)
+
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 200 } })
+  expect((await frameIn(band)).source.length).toBeLessThan(120_000)
+  expect((await frameIn(band)).height).toBeLessThanOrEqual(215)
+  await band.unmount()
+
+  await clock.advance(ACTIVITY)
+  const pane = await $.ui.mount({ plugin: 'agent-board', component: 'Pane', requestId: 'agent-board', surface: 'desktop', props: { title: 'Agent Board', isFocused: false, bodyColumns: 120, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } })
+  expect((await frameIn(pane)).source.length).toBeLessThan(120_000)
+  await pane.unmount()
 })
 
 test('a bubble shows its whole thought, and a thought too long to be small is replaced, never cut', async ($, on) => {
@@ -667,18 +760,19 @@ test('a bubble shows its whole thought, and a thought too long to be small is re
   await clock.advance(POLL)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  // One drawn glyph per letter of the thought and of the bubble's `25%`.
-  const lettersIn = async () => (await frameIn(ui)).source.match(/<use href="#g\d+" x=/g)?.length
+  // One drawn glyph per letter, so what a thought adds over a short one is every letter it has.
+  const lettersFor = async (done: number, doing: string) => {
+    await reported($, 'a1', done, 4, doing)
+    await clock.advance(ACTIVITY)
 
-  await reported($, 'a1', 1, 4, 'Find why the photo cannot be added')
-  expect(await lettersIn()).toBe('Findwhythephotocannotbeadded'.length + 3)
+    return (await frameIn(ui)).source.match(/<use href="#g\d+" x=/g)?.length ?? 0
+  }
+  const least = await lettersFor(0, 'Go')
 
-  await reported($, 'a1', 2, 4, 'Reading files...')
-  expect(await lettersIn()).toBe('Readingfiles'.length + 3)
+  expect(await lettersFor(0, 'Find why the photo cannot be added')).toBe(least + 'Findwhythephotocannotbeadded'.length - 2)
+  expect(await lettersFor(0, 'Reading files...')).toBe(least + 'Readingfiles'.length - 2)
   expect((await frameIn(ui)).source).not.toContain('#g46"')
-
-  await reported($, 'a1', 3, 4, 'Reading files…')
-  expect(await lettersIn()).toBe('Readingfiles'.length + 3)
+  expect(await lettersFor(0, 'Writing files…')).toBe(least + 'Writingfiles'.length - 2)
 
   await $.tool.call({ tool: 'Bash', tool_use_id: 'u1', command: 'ls', description: 'Listing every single file under the whole of the home folder', agentId: 'a1' })
   await reported($, 'a1', 3, 4, 'Reading the photo upload markup, the bucket switch and the env')

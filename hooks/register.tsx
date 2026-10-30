@@ -1,10 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { AgentInfo, EngineInterface, Register } from 'claude-code'
 
-import type { BoardAgent, BoardRun, BoardStatus, PlanStep } from '../types'
+import type { BoardAgent, BoardRun, BoardStage, BoardStatus, PlanStep } from '../types'
 
-import { altOf, campfire, MOST_ACTORS, sceneOf } from './scene'
-import type { Actor } from './scene'
+import { altOf, coffee, sceneOf } from './scene'
+import type { Actor, Department, Office } from './scene'
 
 const POLL_MS = 2000
 const MINUTE_MS = 60_000
@@ -30,7 +30,7 @@ const PROGRESS_ASK = `
 Progress: if a tool named ${PROGRESS_TOOL} is available to you, call it before your first step with done 0, total set to how many steps you expect, and doing set to what you are about to do in four words or fewer. Call it again each time you finish a step, alongside your next tool call, and once more with done equal to total just before your final reply. Raise total if the work grows. Leave this out of your report.`
 
 // Change the tag when an agent's fields change: it declines what an earlier version stored.
-const agents = atom({ plugin: 'agent-board', key: 'agents' } as const, [], { shape: 'agents-5' })
+const agents = atom({ plugin: 'agent-board', key: 'agents' } as const, [], { shape: 'agents-6' })
 // The time durations are read against. The board shows whole minutes, so this moves only often
 // enough to keep them right, and the band is not redrawn at every poll.
 const now = atom({ plugin: 'agent-board', key: 'now' } as const, 0)
@@ -38,6 +38,8 @@ const steps = atom({ plugin: 'agent-board', key: 'steps' } as const, {})
 const isExpanded = atom({ plugin: 'agent-board', key: 'isExpanded' } as const, false)
 const plan = atom({ plugin: 'agent-board', key: 'plan' } as const, [])
 const runs = atom({ plugin: 'agent-board', key: 'runs' } as const, {})
+// Moved when a drawing held back is due, so the scene has a reason to draw it.
+const tick = atom({ plugin: 'agent-board', key: 'tick' } as const, 0)
 
 type Look = { glyph: string; word: string; color?: 'claude' | 'warning' | 'success' | 'error' }
 
@@ -55,8 +57,9 @@ const LOOK: Record<BoardStatus, Look> = {
 // Worst news first: the board's order, and the summary's.
 const ORDER: BoardStatus[] = ['failed', 'waiting', 'running', 'pending', 'idle', 'completed', 'killed', 'gone']
 
-// How many of a squad are drawn behind its leader.
-const PACK = 4
+// Every new drawing restarts the scene's animation, so what agents are up to reaches it no more often than this.
+// Someone starting, finishing or failing does not wait.
+const ACTIVITY_MS = 6000
 // How long a run's end counts as news. Its notification wakes the main agent, and the redraw that brings must not lose the party.
 const PARTY_MS = 3000
 
@@ -134,6 +137,18 @@ const stepOf = (tool: string, input: Readonly<Record<string, unknown>>): string 
   return brief(`Using ${tool}`, 'Using a tool')
 }
 
+/** The stages a workflow script lists in its `meta`, which is a pure literal, so it can be read without running it. */
+const stagesOf = (script: string): BoardStage[] => {
+  const listed = /phases\s*:\s*\[([\s\S]*?)\]/.exec(script)?.[1] ?? ''
+  const valueOf = (entry: string, key: string): string => new RegExp(`${key}\\s*:\\s*(['"\`])(.*?)\\1`).exec(entry)?.[2] ?? ''
+
+  return [...listed.matchAll(/\{[^}]*\}/g)].flatMap(([entry]) => {
+    const title = valueOf(entry, 'title')
+
+    return title === '' ? [] : [{ title, detail: brief(valueOf(entry, 'detail'), '') }]
+  })
+}
+
 /** What a row says: the step while one is under way, else the status in a word. */
 const detailOf = (one: BoardAgent, step: string): string => {
   if (step !== '' && one.status === 'running') {
@@ -173,8 +188,8 @@ const leftOf = (one: BoardAgent, at: number): string => {
   return left < MINUTE_MS ? '<1m left' : `~${span(left)} left`
 }
 
-/** Nobody on the way anywhere: every move and party is for one drawing, so the next must not play it again. */
-const settled = (one: BoardAgent): BoardAgent => ({ ...one, from: reportedOf(one), isFresh: false })
+/** Nobody just finished: a report's flight is for one drawing, so the next must not play it again. */
+const settled = (one: BoardAgent): BoardAgent => ({ ...one, isFresh: false })
 
 const joined = (...parts: string[]): string => parts.filter(part => part !== '').join(' · ')
 
@@ -197,62 +212,88 @@ const wordsOf = (one: BoardAgent): string => {
   return joined(percent, LOOK[one.status].word)
 }
 
-const actorOf = (one: BoardAgent): Actor => ({
-  id: one.id,
-  kind: one.kind,
-  seat: one.seat,
-  status: one.status,
-  isFresh: one.isFresh,
-  percent: one.status === 'completed' || one.status === 'gone' ? null : reportedOf(one),
-  from: one.from,
-  label: one.label,
-  thought: one.thought === '' ? brief(one.label, 'On its task') : one.thought,
-  words: wordsOf(one),
-})
+/** A workflow's agent reports nothing, so its bubble is its task, and what it is touching now. */
+const runThoughtOf = (one: BoardAgent, step: string): string => {
+  const task = one.label.split(':').slice(1).join(' ').replace(/[-_]+/g, ' ').trim()
+  const touching = step.replace(/^Reading /, '')
 
-/**
- * Many agents as one actor, under one bubble that counts them. A workflow can decide how many it
- * wants as it goes, so the count is of those started so far, and can fall behind as the run grows.
- */
-const squadOf = (id: string, name: string, members: readonly BoardAgent[], status: BoardStatus, isFresh: boolean): Actor[] => {
-  const working = members.filter(one => !hasEnded(one.status))
-  const [leader, ...rest] = [...working, ...members.filter(one => hasEnded(one.status))]
-
-  if (leader === undefined) {
-    return []
+  if (task === '') {
+    return touching || brief(one.label, 'On its task')
   }
 
-  const finished = members.length - working.length
-  const failed = members.filter(one => one.status === 'failed').length
-  const state = status === 'running' || status === 'completed' ? '' : LOOK[status].word
-
-  return [
-    {
-      id,
-      kind: leader.kind,
-      seat: leader.seat,
-      status,
-      isFresh,
-      percent: status === 'completed' ? null : Math.round((finished / members.length) * 100),
-      from: null,
-      label: name,
-      thought: name,
-      words: joined(`${finished}/${members.length} done`, failed > 0 ? `${failed} failed` : state),
-      pack: rest.slice(0, PACK).map(one => ({ kind: one.kind, seat: one.seat })),
-    },
-  ]
+  return touching === '' ? brief(task, 'On its task') : brief(`${task} · ${touching}`, brief(task, touching))
 }
 
-const runActors = (id: string, run: BoardRun | undefined, members: readonly BoardAgent[], at: number): Actor[] => {
+const actorOf = (one: BoardAgent, step: string): Actor => {
+  const isOnRun = one.run !== ''
+
+  return {
+    id: one.id,
+    seat: one.seat,
+    status: one.status,
+    isFresh: one.isFresh,
+    percent: one.status === 'completed' || one.status === 'gone' ? null : reportedOf(one),
+    label: one.label,
+    thought: isOnRun ? runThoughtOf(one, step) : one.thought === '' ? brief(one.label, 'On its task') : one.thought,
+    words: isOnRun && !hasEnded(one.status) ? '' : wordsOf(one),
+    atCopier: one.atCopier,
+    wasAtCopier: one.atCopier,
+  }
+}
+
+const stageOf = (one: BoardAgent, stages: readonly BoardStage[]): number => {
+  // A script usually labels its agents by stage, as in `verify:17`. Where it does not, each wave of agents is a stage.
+  const named = stages.findIndex(stage => stage.title.toLowerCase() === (one.label.split(':')[0] ?? '').trim().toLowerCase())
+
+  return named >= 0 ? named : Math.min(one.wave, stages.length - 1)
+}
+
+const runDepartments = (id: string, run: BoardRun | undefined, members: readonly BoardAgent[], step: Readonly<Record<string, string>>): Department[] => {
+  const name = brief((run?.name ?? '').replace(/[-_]+/g, ' '), '') || 'Workflow'
   const ended = run?.ended ?? ''
-  const going = members.some(one => !hasEnded(one.status)) ? 'running' : 'waiting'
-  const isFresh = ended === 'completed' && at - (run?.endedAt ?? 0) < PARTY_MS
+  const going: BoardStatus = members.some(one => !hasEnded(one.status)) ? 'running' : 'waiting'
+  const status: BoardStatus = ended === '' ? going : ended
+  const state = status === 'running' || status === 'completed' ? '' : LOOK[status].word
+  const told = (who: string, group: readonly BoardAgent[]): string => {
+    const finished = group.filter(one => hasEnded(one.status)).length
+    const failed = group.filter(one => one.status === 'failed').length
 
-  return squadOf(`run:${id}`, brief((run?.name ?? '').replace(/[-_]+/g, ' '), '') || 'Workflow', members, ended === '' ? going : ended, isFresh)
+    return `${who}: ${joined(`${finished}/${group.length} done`, failed > 0 ? `${failed} failed` : state)}.`
+  }
+  const actors = (group: readonly BoardAgent[]): Actor[] => group.map(one => actorOf(one, step[one.id] ?? ''))
+  const stages = run?.stages ?? []
+
+  if (stages.length === 0) {
+    return [{ id: `run:${id}`, group: name, title: name.toUpperCase(), detail: '', state: ended === '' ? 'now' : 'past', agents: actors(members), says: told(name, members) }]
+  }
+
+  const reached = members.reduce((most, one) => Math.max(most, stageOf(one, stages)), 0)
+
+  return stages.flatMap((stage, i): Department[] => {
+    const group = members.filter(one => stageOf(one, stages) === i)
+
+    if (ended !== '' && group.length === 0) {
+      return []
+    }
+
+    return [
+      {
+        id: `run:${id}:${i}`,
+        group: name,
+        title: stage.title.toUpperCase(),
+        detail: stage.detail,
+        state: i < reached || ended !== '' ? 'past' : i === reached ? 'now' : 'next',
+        agents: actors(group),
+        says: group.length === 0 ? '' : told(`${name}, ${stage.title}`, group),
+      },
+    ]
+  })
 }
 
-/** Who the scene draws: every workflow run as one squad, and everyone else alone until the path is full. */
-const actorsOf = (board: readonly BoardAgent[], known: Readonly<Record<string, BoardRun>>, at: number): Actor[] => {
+/** Who the scene draws: the main agent as the boss, the agents with no run as one team, and each stage of each run as a department. */
+const officeOf = (board: readonly BoardAgent[], known: Readonly<Record<string, BoardRun>>, step: Readonly<Record<string, string>>, at: number): Office => {
+  const main = board.find(one => one.id === MAIN)
+  const team = rankedOf(board.filter(one => one.run === '' && one.id !== MAIN))
   const byRun = new Map<string, BoardAgent[]>()
 
   for (const one of board) {
@@ -261,21 +302,17 @@ const actorsOf = (board: readonly BoardAgent[], known: Readonly<Record<string, B
     }
   }
 
-  const squads = [...byRun].flatMap(([id, members]) => runActors(id, known[id], members, at))
-  const alone = rankedOf(board.filter(one => one.run === '')).sort((a, b) => Number(b.id === MAIN) - Number(a.id === MAIN))
-  const room = Math.max(1, MOST_ACTORS - squads.length)
+  const finishedRun = [...byRun.keys()].some(id => known[id]?.ended === 'completed' && at - (known[id]?.endedAt ?? 0) < PARTY_MS)
+  const finishedTeam = team.length > 0 && team.every(one => hasEnded(one.status)) && team.some(one => one.isFresh)
 
-  if (alone.length <= room) {
-    return [...alone.map(actorOf), ...squads]
+  return {
+    boss: main === undefined ? null : actorOf(main, ''),
+    departments: [
+      ...(team.length === 0 ? [] : [{ id: 'team', group: 'Team', title: 'TEAM', detail: '', state: 'now' as const, agents: team.map(one => actorOf(one, '')), says: '' }]),
+      ...[...byRun].flatMap(([id, members]) => runDepartments(id, known[id], members, step)),
+    ],
+    isParty: finishedRun || finishedTeam,
   }
-
-  const rest = alone.slice(room - 1)
-
-  return [
-    ...alone.slice(0, room - 1).map(actorOf),
-    ...squadOf('more', `${rest.length} more agents`, rest, rest.some(one => !hasEnded(one.status)) ? 'running' : 'completed', false),
-    ...squads,
-  ]
 }
 
 const rankedOf = (board: readonly BoardAgent[]): BoardAgent[] =>
@@ -287,19 +324,19 @@ const rankedOf = (board: readonly BoardAgent[]): BoardAgent[] =>
 const mainAt = (at: number): BoardAgent => ({
   id: MAIN,
   label: 'Claude',
-  kind: 'main',
   seat: -1,
   status: 'running',
   thought: '',
   left: '',
   done: 0,
   total: 0,
-  from: null,
   isFresh: false,
   startedAt: at,
   endedAt: null,
   isCleared: false,
   run: '',
+  wave: 0,
+  atCopier: false,
 })
 
 /** The task list after one call of the tool that keeps it: a whole new list, or the steps it moved. */
@@ -347,7 +384,7 @@ const reported = (list: readonly BoardAgent[], id: string, done: number, total: 
 
   return list.map(one => {
     if (one.id === id) {
-      return hasChanged ? { ...told, from: reportedOf(one), isFresh: false } : told
+      return hasChanged ? { ...told, isFresh: false } : told
     }
 
     return hasChanged ? settled(one) : one
@@ -404,19 +441,19 @@ const merged = (board: readonly BoardAgent[], listed: readonly AgentInfo[], at: 
       return {
         id: info.id,
         label: labelOf(info),
-        kind: info.type,
         seat,
         status: info.status,
         thought: '',
         left: '',
         done: 0,
         total: 0,
-        from: null,
         isFresh: false,
         startedAt: at,
         endedAt: hasEnded(info.status) ? at : null,
         isCleared: false,
         run: '',
+        wave: 0,
+        atCopier: false,
       }
     })
   const next = [...kept, ...fresh]
@@ -430,6 +467,9 @@ const merged = (board: readonly BoardAgent[], listed: readonly AgentInfo[], at: 
 }
 
 let thoughtAt = 0
+// A drawing held back for ACTIVITY_MS, which the next poll past that lets through.
+let isHeldBack = false
+let drawnAt = 0
 
 /** One poll. It writes only what changed, so a quiet session never redraws the band. */
 const sync = async ($: EngineInterface): Promise<void> => {
@@ -453,6 +493,11 @@ const sync = async ($: EngineInterface): Promise<void> => {
     thoughtAt = at
     await update($, agents, list => reported(list, MAIN, 0, 0, step, at))
   }
+
+  if (isHeldBack && at - drawnAt >= ACTIVITY_MS) {
+    isHeldBack = false
+    await update($, tick, count => count + 1)
+  }
 }
 
 /** Opens the big scene. A press or a command is the only thing that may: a pane opened unasked waits undrawn. */
@@ -466,24 +511,54 @@ const expand = async ($: EngineInterface): Promise<void> => {
   }
 }
 
-// When the scene last changed, in seconds: its clouds start from here, so a redraw does not send them back.
-let drawnKey = ''
-let drawnAt = 0
+// The last drawing of each view, kept to draw again while what changed since can wait.
+type Drawing = { key: string; hard: string; scene: ReturnType<typeof sceneOf> }
+const drawings = new Map<string, Drawing>()
+// Who was at the copier on the last drawing, so they walk over rather than jump.
+const lastPlace = new Map<string, boolean>()
+
+const placed = (actor: Actor): Actor => {
+  const wasAtCopier = lastPlace.get(actor.id) ?? actor.atCopier
+
+  lastPlace.set(actor.id, actor.atCopier)
+
+  return { ...actor, wasAtCopier }
+}
 
 const staged = async ($: EngineInterface, board: readonly BoardAgent[], columns: number, rows?: number) => {
-  const actors = actorsOf(board, await read($, runs), await $.clock.now())
-  const key = JSON.stringify([actors, columns, rows])
+  const at = await $.clock.now()
+  const office = officeOf(board, await read($, runs), await read($, steps), at)
+  const alt = altOf(office)
+  const view = rows === undefined ? 'band' : 'pane'
+  const key = JSON.stringify([office, columns, rows])
+  const hard = JSON.stringify([columns, rows, office.isParty, office.boss?.id, office.departments.map(one => [one.id, one.state, one.agents.map(agent => [agent.id, agent.status])])])
+  const last = drawings.get(view)
 
-  if (key !== drawnKey) {
-    drawnKey = key
-    drawnAt = Math.floor((await $.clock.now()) / 1000)
+  // Read so a held-back drawing has a way in.
+  await read($, tick)
+
+  if (last !== undefined && (last.key === key || (last.hard === hard && at - drawnAt < ACTIVITY_MS))) {
+    isHeldBack = isHeldBack || last.key !== key
+
+    return { scene: last.scene, alt }
   }
 
-  return { scene: sceneOf(actors, { columns, rows, clock: drawnAt }), alt: altOf(actors) }
+  const scene = sceneOf(
+    { ...office, departments: office.departments.map(one => ({ ...one, agents: one.agents.map(placed) })) },
+    { columns, rows, clock: Math.floor(at / 1000) },
+  )
+
+  drawings.set(view, { key, hard, scene })
+  drawnAt = at
+
+  return { scene, alt }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    drawings.clear()
+    lastPlace.clear()
+    isHeldBack = false
     await $.command.register({ name: 'agent-board', description: 'Show the agent board as large as a pane allows' })
     await update($, isExpanded, () => false)
 
@@ -526,7 +601,7 @@ export const register: Register = on => {
         const word = /<status>(\w+)<\/status>/.exec(e.text)?.[1]
         const ended: BoardRun['ended'] = word === 'failed' || word === 'killed' ? word : 'completed'
 
-        await update($, runs, known => ({ ...known, [over]: { name: known[over]?.name ?? '', task: known[over]?.task ?? '', ended, endedAt: at } }))
+        await update($, runs, known => ({ ...known, [over]: { name: known[over]?.name ?? '', task: known[over]?.task ?? '', ended, endedAt: at, stages: known[over]?.stages ?? [] } }))
         await update($, agents, list =>
           list.map(one => (one.run === over && !hasEnded(one.status) ? { ...settled(one), status: 'gone', left: '', endedAt: at } : settled(one))),
         )
@@ -569,7 +644,7 @@ export const register: Register = on => {
       const status = e.reason === 'answer' ? 'completed' : e.reason === 'aborted' ? 'killed' : 'failed'
 
       await update($, agents, list =>
-        list.map(one => (one.id === e.agentId ? { ...settled(one), status, left: '', endedAt: at } : settled(one))),
+        list.map(one => (one.id === e.agentId ? { ...settled(one), status, left: '', endedAt: at, isFresh: status === 'completed' } : settled(one))),
       )
     }
 
@@ -598,22 +673,30 @@ export const register: Register = on => {
       return next(e.resume === undefined ? { ...e, prompt: `${e.prompt}${PROGRESS_ASK}` } : e)
     }
 
-    // A workflow's agents are in no list, so the board keeps them from here. Their squad counts
-    // them, so they are not asked to report: that would cost dozens of agents tokens for nothing.
+    // A workflow's agents are in no list, so the board keeps them from here. They are not asked
+    // to report: their tools say what they are on, and it would cost dozens of agents tokens.
     const place = `${workflow.runId}#${workflow.agentIndex}`
     const at = await $.clock.now()
 
-    await update($, agents, list => [
-      ...list.map(settled),
-      {
-        ...mainAt(at),
-        id: place,
-        label: clip(e.description),
-        kind: e.subagentType,
-        seat: Math.max(-1, ...list.map(one => one.seat)) + 1,
-        run: workflow.runId || 'workflow',
-      },
-    ])
+    const run = workflow.runId || 'workflow'
+
+    await update($, agents, list => {
+      const mine = list.filter(one => one.run === run)
+      const wave = Math.max(0, ...mine.map(one => one.wave))
+
+      return [
+        ...list.map(settled),
+        {
+          ...mainAt(at),
+          id: place,
+          label: clip(e.description),
+          seat: Math.max(-1, ...list.map(one => one.seat)) + 1,
+          run,
+          // Nobody left working when it starts: the script has moved on to something new.
+          wave: mine.length === 0 || mine.some(one => !hasEnded(one.status)) ? wave : wave + 1,
+        },
+      ]
+    })
 
     const started = await next(e)
 
@@ -677,12 +760,16 @@ export const register: Register = on => {
       }
 
       const started = await next(e)
-      const { runId, taskId, workflowName } = (started.result ?? {}) as Readonly<Record<string, unknown>>
+      const { runId, taskId, workflowName, scriptPath } = (started.result ?? {}) as Readonly<Record<string, unknown>>
 
       if (typeof runId === 'string') {
+        const written = typeof scriptPath === 'string' ? await $.fs.read(scriptPath).catch(() => '') : ''
+        const script: unknown = (e as Readonly<Record<string, unknown>>).script
+        const stages = stagesOf(written || (typeof script === 'string' ? script : ''))
+
         await update($, runs, known => ({
           ...known,
-          [runId]: { name: typeof workflowName === 'string' ? workflowName : '', task: typeof taskId === 'string' ? taskId : '', ended: '' as const, endedAt: 0 },
+          [runId]: { name: typeof workflowName === 'string' ? workflowName : '', task: typeof taskId === 'string' ? taskId : '', ended: '' as const, endedAt: 0, stages },
         }))
       }
 
@@ -690,10 +777,17 @@ export const register: Register = on => {
     }
 
     // Forks and compactions call tools under ids the list never names: not his agents.
-    if (!isQuiet && (await read($, agents)).some(one => one.id === id && one.run === '')) {
+    const record = (await read($, agents)).find(one => one.id === id)
+
+    if (!isQuiet && record !== undefined) {
       const step = stepOf(e.tool, e)
+      const atCopier = String(e.tool) === 'Bash'
 
       await update($, steps, known => ({ ...known, [id]: step }))
+
+      if (record.atCopier !== atCopier) {
+        await update($, agents, list => list.map(one => (one.id === id ? { ...one, atCopier } : one)))
+      }
     }
 
     return next(e)
@@ -716,11 +810,11 @@ export const register: Register = on => {
       }
 
       if (board.length === 0) {
-        const fire = campfire()
+        const mug = coffee()
 
         return (
           <Box flexDirection="row" columnGap={1} alignItems="center">
-            <Svg source={fire.source} alt="A campfire with nobody at it." width={fire.width} height={fire.height} isInteractive />
+            <Svg source={mug.source} alt="A mug of coffee, and nobody at their desk." width={mug.width} height={mug.height} isInteractive />
             <Text dimColor>No agents running</Text>
           </Box>
         )

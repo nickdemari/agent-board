@@ -4,8 +4,6 @@ export type BoardStatus = 'pending' | 'running' | 'waiting' | 'idle' | 'complete
 export type BoardAgent = {
   id: string
   label: string
-  /** The agent type it was spawned as: what it wears on the board. */
-  kind: string
   /** Its place in the party, which picks its color. Held for as long as it is on the board. */
   seat: number
   status: BoardStatus
@@ -16,9 +14,7 @@ export type BoardAgent = {
   /** Steps it says it has finished, of the steps it says it expects; total 0 until it first reports. */
   done: number
   total: number
-  /** The percent it stood at before its latest move, so the next drawing walks it over; null with no report yet. */
-  from: number | null
-  /** It finished since the board last changed: the one drawing that throws it a party. */
+  /** It finished since the board last changed: the one drawing that flies its report to the pile. */
   isFresh: boolean
   startedAt: number
   endedAt: number | null
@@ -26,7 +22,14 @@ export type BoardAgent = {
   isCleared: boolean
   /** The workflow run it is part of, which the engine's list does not name; '' for any other agent. */
   run: string
+  /** Which burst of agents in its run it started with: a run that went quiet and then started more has moved on. */
+  wave: number
+  /** Its latest tool was a command, which it runs at the copier. */
+  atCopier: boolean
 }
+
+/** One stage of a workflow, as its script's `meta` lists it. */
+export type BoardStage = { title: string; detail: string }
 
 /** One workflow run, as far as the board can tell from outside it. */
 export type BoardRun = {
@@ -36,6 +39,7 @@ export type BoardRun = {
   /** How it ended; '' until then, even with all its agents done, since the script may yet start more. */
   ended: '' | 'completed' | 'failed' | 'killed'
   endedAt: number
+  stages: BoardStage[]
 }
 
 /** One step of the main agent's own task list. */
@@ -51,6 +55,7 @@ declare module 'claude-code' {
       isExpanded: boolean
       plan: PlanStep[]
       runs: Record<string, BoardRun>
+      tick: number
     }
   }
 }
