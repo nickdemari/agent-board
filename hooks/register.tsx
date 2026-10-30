@@ -11,6 +11,8 @@ const MINUTE_MS = 60_000
 const NOW_MS = 15_000
 // The main agent's steps come fast, and each new thought redraws the scene: no more than this often.
 const THOUGHT_MS = 8000
+// The longest thought a bubble is given.
+const BRIEF_CHARS = 40
 // Rows under the summary, the `+n more` row included.
 const MAX_ROWS = 4
 
@@ -25,7 +27,7 @@ const PROGRESS_TOOL = 'mcp__agent-board__progress'
 // The engine knows nothing of how far along an agent is, so each agent is asked to say.
 const PROGRESS_ASK = `
 
-Progress: if a tool named ${PROGRESS_TOOL} is available to you, call it before your first step with done 0, total set to how many steps you expect, and doing set to what you are about to do in a few words. Call it again each time you finish a step, alongside your next tool call, and once more with done equal to total just before your final reply. Raise total if the work grows. Leave this out of your report.`
+Progress: if a tool named ${PROGRESS_TOOL} is available to you, call it before your first step with done 0, total set to how many steps you expect, and doing set to what you are about to do in four words or fewer. Call it again each time you finish a step, alongside your next tool call, and once more with done equal to total just before your final reply. Raise total if the work grows. Leave this out of your report.`
 
 // Change the tag when an agent's fields change: it declines what an earlier version stored.
 const agents = atom({ plugin: 'agent-board', key: 'agents' } as const, [], { shape: 'agents-4' })
@@ -64,6 +66,13 @@ const clip = (text: string, limit = 60): string => {
   return line.length > limit ? `${line.slice(0, limit - 1).trimEnd()}…` : line
 }
 
+/** The text if a bubble can show it whole and still be small, else what to say instead. A bubble never cuts words. */
+const brief = (text: string, otherwise: string): string => {
+  const line = text.replace(/\s+/g, ' ').trim()
+
+  return line.length <= BRIEF_CHARS ? line : otherwise
+}
+
 const labelOf = (info: AgentInfo): string => clip(info.description || info.name || info.type)
 
 const fileName = (value: unknown): string => (typeof value === 'string' ? value.split(/[\\/]/).pop() : '') || 'a file'
@@ -73,27 +82,27 @@ const words = (value: unknown): string => (typeof value === 'string' ? value : '
 /** One tool call in plain words. */
 const stepOf = (tool: string, input: Readonly<Record<string, unknown>>): string => {
   if (tool === 'Read') {
-    return `Reading ${fileName(input.file_path)}`
+    return brief(`Reading ${fileName(input.file_path)}`, 'Reading a file')
   }
 
   if (tool === 'Edit' || tool === 'NotebookEdit') {
-    return `Editing ${fileName(input.file_path ?? input.notebook_path)}`
+    return brief(`Editing ${fileName(input.file_path ?? input.notebook_path)}`, 'Editing a file')
   }
 
   if (tool === 'Write') {
-    return `Writing ${fileName(input.file_path)}`
+    return brief(`Writing ${fileName(input.file_path)}`, 'Writing a file')
   }
 
   if (tool === 'Bash') {
-    return clip(words(input.description) || `Running ${words(input.command)}`)
+    return brief(words(input.description) || `Running ${words(input.command)}`, 'Running a command')
   }
 
   if (tool === 'Grep' || tool === 'Glob') {
-    return clip(`Searching for ${words(input.pattern)}`)
+    return brief(`Searching for ${words(input.pattern)}`, 'Searching the code')
   }
 
   if (tool === 'WebSearch') {
-    return clip(`Searching the web: ${words(input.query)}`)
+    return brief(`Searching the web: ${words(input.query)}`, 'Searching the web')
   }
 
   if (tool === 'WebFetch') {
@@ -101,16 +110,18 @@ const stepOf = (tool: string, input: Readonly<Record<string, unknown>>): string 
   }
 
   if (tool === 'Agent') {
-    return clip(`Delegating: ${words(input.description) || 'a subtask'}`)
+    return brief(`Delegating: ${words(input.description) || 'a subtask'}`, 'Delegating a subtask')
   }
 
   if (tool.startsWith('mcp__')) {
     const [, server = '', name = ''] = tool.split('__')
 
-    return clip(`${server.replace(/^plugin_/, '').split('_').pop()}: ${name.replace(/[_-]+/g, ' ')}`)
+    const app = server.replace(/^plugin_/, '').split('_').pop() ?? ''
+
+    return brief(`${app}: ${name.replace(/[_-]+/g, ' ')}`, `Using ${app}`)
   }
 
-  return `Using ${tool}`
+  return brief(`Using ${tool}`, 'Using a tool')
 }
 
 /** What a row says: the step while one is under way, else the status in a word. */
@@ -184,7 +195,7 @@ const actorOf = (one: BoardAgent): Actor => ({
   percent: one.status === 'completed' || one.status === 'gone' ? null : reportedOf(one),
   from: one.from,
   label: one.label,
-  thought: one.thought === '' ? one.label : one.thought,
+  thought: one.thought === '' ? brief(one.label, 'On its task') : one.thought,
   words: wordsOf(one),
 })
 
@@ -402,7 +413,7 @@ export const register: Register = on => {
         properties: {
           done: { type: 'integer', description: 'Steps finished so far.' },
           total: { type: 'integer', description: 'Steps you now expect in all.' },
-          doing: { type: 'string', maxLength: 40, description: 'What you are doing now, in a few words.' },
+          doing: { type: 'string', maxLength: 40, description: 'What you are doing now, in four words or fewer.' },
         },
         required: ['done', 'total'],
       },
@@ -479,7 +490,7 @@ export const register: Register = on => {
 
       if (id !== undefined) {
         const at = await $.clock.now()
-        const doing = typeof input.doing === 'string' ? clip(input.doing, 40) : ''
+        const doing = typeof input.doing === 'string' ? brief(input.doing, '') : ''
         const step = (await read($, steps))[id] ?? ''
 
         await update($, agents, list => reported(list, id, done, total, doing || step, at))
@@ -501,11 +512,12 @@ export const register: Register = on => {
       if (PLAN_TOOLS.has(String(e.tool))) {
         const input: Readonly<Record<string, unknown>> = e
         const after = planAfter(await read($, plan), input)
-        const active = after.find(step => step.status === 'in_progress')
+        const active = after.findIndex(step => step.status === 'in_progress')
+        const thought = brief(after[active]?.content ?? '', `Step ${active + 1} of ${after.length}`)
 
         await update($, plan, () => after)
         await update($, agents, list =>
-          reported(list, MAIN, after.filter(step => step.status === 'completed').length, after.length, clip(active?.content ?? '', 40), at),
+          reported(list, MAIN, after.filter(step => step.status === 'completed').length, after.length, thought, at),
         )
       } else if (!isQuiet) {
         const step = stepOf(e.tool, e)

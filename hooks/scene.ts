@@ -44,8 +44,8 @@ const BUBBLE_ROW = 23
 // The sky under the lowest bubble, where the agents stand, and over the highest.
 const SKY_LEFT = 25
 const BUBBLE_GAP = 2
+// How wide a bubble's lines start. A longer thought widens them rather than lose any of its words.
 const LINE_CHARS = 16
-const WORDS_CHARS = 18
 const MOST_ACTORS = 12
 
 const INK = '#222034'
@@ -579,29 +579,24 @@ const drawActor = (actor: Actor, width: number, height: number, cast: Cast, home
   return `<g transform="translate(${x} ${y})">${walk}${run}</g>`
 }
 
-/** Words cut to whole lines of a width. What does not fit is left out at a word's end, with no dots to say so. */
-const wrapped = (text: string, chars: number, lines: number): string[] => {
-  const kept: string[] = []
-  let line = ''
-  const whole = text.replace(/…|\.{2,}/g, ' ').toUpperCase().trim()
+/** The whole thought in two lines at most, as narrow as that lets them be. */
+const linesOf = (text: string): string[] => {
+  const words = text.replace(/…|\.{2,}/g, ' ').toUpperCase().split(/\s+/).filter(word => word !== '')
+  const wrappedAt = (chars: number): string[] =>
+    words.reduce<string[]>((lines, word) => {
+      const last = lines.at(-1)
 
-  for (const word of whole === '' ? [] : whole.split(/\s+/)) {
-    const piece = word.slice(0, chars)
+      return last !== undefined && last.length + 1 + word.length <= chars
+        ? [...lines.slice(0, -1), `${last} ${word}`]
+        : [...lines, word]
+    }, [])
+  let chars = LINE_CHARS
 
-    if (line !== '' && line.length + 1 + piece.length > chars) {
-      kept.push(line)
-
-      if (kept.length === lines) {
-        return kept
-      }
-
-      line = piece
-    } else {
-      line = line === '' ? piece : `${line} ${piece}`
-    }
+  while (wrappedAt(chars).length > 2) {
+    chars += 1
   }
 
-  return line === '' ? kept : [...kept, line]
+  return wrappedAt(chars)
 }
 
 const lettered = (text: string, cast: Cast): string =>
@@ -632,9 +627,9 @@ const placed = (actors: readonly Actor[], spots: readonly Spot[], width: number,
       return
     }
 
-    const lines = wrapped(actor.thought, LINE_CHARS, 2)
+    const lines = linesOf(actor.thought)
     // No room in three pixels for a tilde: in the bubble an estimate reads as a time.
-    const words = wrapped(actor.words.replaceAll('~', ''), WORDS_CHARS, 1)[0] ?? ''
+    const words = actor.words.replaceAll('~', '').toUpperCase()
     const inner = Math.max(words.length, ...lines.map(line => line.length)) * 4 - 1
     const bubbleWidth = inner + PADDING_X + 3
     const bubbleHeight = (lines.length + 1) * LINE_HEIGHT + 3

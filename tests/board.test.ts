@@ -499,22 +499,49 @@ test('however many are on it, the scene stays short enough to show whole, and a 
   }
 })
 
-test('a bubble that runs out of room stops at a whole word, with no dots', async ($, on) => {
+test('a bubble shows its whole thought, and a thought too long to be small is replaced, never cut', async ($, on) => {
   const { clock, roster } = world(on)
   await begin($)
   roster.push(agent('a1', 'Task one', 'running'))
   await clock.advance(POLL)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  // One drawn glyph per letter of the thought and of the bubble's `25%`.
+  const lettersIn = async () => (await frameIn(ui)).source.match(/<use href="#g\d+" x=/g)?.length
 
-  for (const doing of ['Reading the photo upload markup, the bucket switch and the env', 'Reading files...', 'Reading files…']) {
-    await reported($, 'a1', 1, 4, doing)
-    expect((await frameIn(ui)).source).not.toContain('#g46"')
-  }
+  await reported($, 'a1', 1, 4, 'Find why the photo cannot be added')
+  expect(await lettersIn()).toBe('Findwhythephotocannotbeadded'.length + 3)
 
-  // Its own trailing dots go, and the word before them stays: the S ends FILES.
-  expect((await frameIn(ui)).source).toContain('#g83"')
+  await reported($, 'a1', 2, 4, 'Reading files...')
+  expect(await lettersIn()).toBe('Readingfiles'.length + 3)
+  expect((await frameIn(ui)).source).not.toContain('#g46"')
 
+  await reported($, 'a1', 3, 4, 'Reading files…')
+  expect(await lettersIn()).toBe('Readingfiles'.length + 3)
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'u1', command: 'ls', description: 'Listing every single file under the whole of the home folder', agentId: 'a1' })
+  await reported($, 'a1', 3, 4, 'Reading the photo upload markup, the bucket switch and the env')
+  expect(await says(ui, 'thinking \\"Running a command\\"')).toBe(true)
+  await ui.unmount()
+})
+
+test('a task list step too long for a bubble says which step it is', async ($, on) => {
+  const { clock } = world(on)
+  await begin($)
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...WORKING, surface: 'desktop' })
+
+  await $.tool.call({
+    tool: 'mcp__ccd_turn__update_plan',
+    tool_use_id: 'u1',
+    items: [
+      { content: 'Read it', status: 'completed' },
+      { content: 'Record the results and the launch step in the whole build plan', status: 'in_progress' },
+    ],
+  } as never)
+  expect(await says(ui, 'thinking \\"Step 2 of 2\\"')).toBe(true)
   await ui.unmount()
 })
 
