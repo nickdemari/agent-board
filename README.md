@@ -11,7 +11,7 @@ A Claude Code mod that turns a session's subagents into a small pixel-art party 
 - **Its status is its pose:** walking, sitting while it waits, asleep when idle, or knocked out under a storm cloud when it fails. Failures stay on the board until your next prompt.
 - **What kind of agent:** the outfit shows the type. The crown is the main agent, a knight is general-purpose, a ranger is Explore or scout, a wizard is Plan, and a bandana is anything else.
 - **Finishing:** it hops at the flag and gets one burst of confetti.
-- **Fill screen:** the button on the scene, or `/agent-board`, opens it in a pane with a taller sky. Mods can't cover the whole window, so a pane is as large as it gets.
+- **Fill screen:** the button above the scene, or `/agent-board`, opens it in a pane with a taller sky. Mods can't cover the whole window, so a pane is as large as it gets.
 
 With no agents running, the band shrinks to a campfire and one line. In a terminal session you get plain text rows instead of the scene.
 

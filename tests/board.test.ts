@@ -56,6 +56,21 @@ const says = async (
   return isTold || (await ui.find({ text: words })) !== undefined
 }
 
+/** The props of the scene as drawn: a frame given no size comes out 300 by 150, whatever the markup says. */
+const frameIn = async (ui: { drawn: () => Promise<unknown> }): Promise<{ source: string; width: number; height: number }> => {
+  let frame: unknown
+
+  JSON.stringify(await ui.drawn(), (_key, value: { source?: unknown } | null) => {
+    if (typeof value?.source === 'string' && value.source.startsWith('<svg')) {
+      frame = value
+    }
+
+    return value
+  })
+
+  return frame as { source: string; width: number; height: number }
+}
+
 const begin = ($: Engine) => $.session.start({ cwd: '/tmp', surface: 'desktop', isInteractive: true })
 const typed = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
 const agent = (id: string, description: string, status: AgentInfo['status']): AgentInfo => ({
@@ -433,6 +448,57 @@ test('a full board stays well under what a surface will take', async ($, on) => 
   await ui.unmount()
 })
 
+test('the scene is drawn at the size of its slot, and a wider band is longer rather than taller', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Task one', 'running'))
+  await clock.advance(POLL)
+
+  const sizeAt = async (bodyColumns: number) => {
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns } })
+    const frame = await frameIn(ui)
+
+    await ui.unmount()
+
+    return frame
+  }
+  const usual = await sizeAt(85)
+  const wide = await sizeAt(200)
+  const narrow = await sizeAt(30)
+
+  expect(usual.source).toContain(`width="${usual.width}" height="${usual.height}"`)
+  expect(usual.width).toBeGreaterThan(680)
+  expect(usual.width).toBeLessThanOrEqual(714)
+  expect(wide.width).toBeGreaterThan(usual.width * 2)
+  expect(wide.height).toBe(usual.height)
+  expect(narrow.width).toBeLessThanOrEqual(252)
+  expect(narrow.source).toContain(`width="${narrow.width}" height="${narrow.height}"`)
+})
+
+test('however many are on it, the scene stays short enough to show whole, and a usual crowd keeps every bubble', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+
+  for (const crowd of [1, 3, 6, 12]) {
+    roster.length = 0
+    roster.push(...Array.from({ length: crowd }, (_, n) => agent(`a${n}`, `Task ${n}`, 'running')))
+    await clock.advance(POLL)
+    await Promise.all(roster.map((one, n) => reported($, one.id, n, 12, 'Reading every single file in here')))
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 85 } })
+    const frame = await frameIn(ui)
+
+    expect(frame.height).toBeLessThanOrEqual(215)
+
+    // Twelve standing close together can leave one with nowhere to put its bubble.
+    if (crowd <= 6) {
+      expect(frame.source.match(/#FFFFFF" d="M1 1h/g)?.length).toBe(crowd)
+    }
+
+    await ui.unmount()
+  }
+})
+
 test('a bubble says what the agent said it was doing, else its step at that report, else its task', async ($, on) => {
   const { clock, roster } = world(on)
   await begin($)
@@ -472,6 +538,9 @@ test('fill screen opens the big scene and the band stands aside', async ($, on) 
   // Taller than the band's scene, since it has the room.
   expect(await says(pane, 'Task one: Working')).toBe(true)
   expect((await sceneIn(pane)).length).toBeGreaterThan(0)
+  const frame = await frameIn(pane)
+  expect(frame.width).toBeLessThanOrEqual(504)
+  expect(frame.height).toBeGreaterThan(frame.width)
   await pane.unmount()
 
   const text = await $.ui.mount({ ...PANE, surface: 'terminal' })

@@ -27,14 +27,22 @@ export type Stage = {
   clock: number
 }
 
+// A desktop cell's width in CSS pixels. A surface says how wide it is in cells, and the frame is sized in pixels.
+const CELL_WIDTH = 8.4
+const MOST_PIXELS = 4096
 const BASE_SCALE = 4
 const WIDEST_SCALE = 8
+const SMALLEST_SCALE = 2
+// How tall a scene can be and still show whole above the prompt. Past this the band scrolls, and hides the ground or the button.
+const BAND_PIXELS = 215
 const ART_WIDTH = 170
 const SPRITE_WIDTH = 12
 const SPRITE_HEIGHT = 16
 const SHORTEST = 43
-const BAND_ROWS = 3
-const ROW_HEIGHT = 17
+// A bubble of three lines and the gap above it.
+const BUBBLE_ROW = 23
+// The sky under the lowest bubble, where the agents stand, and over the highest.
+const SKY_LEFT = 25
 const BUBBLE_GAP = 2
 const LINE_CHARS = 16
 const WORDS_CHARS = 18
@@ -703,11 +711,39 @@ const drawBubbles = (bubbles: readonly Bubble[], height: number, cast: Cast): { 
   return { tails, drawn }
 }
 
-/** The game screen, all of it: one SVG document, wider than most slots, which the surface fits to its own. */
-export const sceneOf = (actors: readonly Actor[], stage: Stage): { source: string; height: number } => {
-  const intrinsic = stage.columns * 8
-  const scale = Math.max(BASE_SCALE, Math.min(WIDEST_SCALE, Math.round(intrinsic / ART_WIDTH)))
-  const width = Math.max(110, Math.floor(intrinsic / scale))
+const bandRows = (scale: number): number => Math.max(1, Math.floor((BAND_PIXELS / scale - SKY_LEFT) / BUBBLE_ROW))
+
+/** A band's pixels: the largest that shows everyone's bubble in the height a band has, else whichever shows the most. */
+const bandScale = (actors: readonly Actor[], slot: number, rankOf: (actor: Actor) => number): number => {
+  let best = BASE_SCALE
+  let mostShown = -1
+
+  for (let scale = BASE_SCALE; scale >= SMALLEST_SCALE && mostShown < actors.length; scale -= 1) {
+    const width = Math.max(110, Math.floor(slot / scale))
+    const spots = actors.map(actor => spotOf(actor, width, 0, rankOf(actor)))
+    const count = placed(actors, spots, width, bandRows(scale)).length
+
+    if (count > mostShown) {
+      best = scale
+      mostShown = count
+    }
+  }
+
+  return best
+}
+
+/** The game screen, all of it: one SVG document, and the size in pixels to give its frame, which is 300 by 150 when given none. */
+export const sceneOf = (actors: readonly Actor[], stage: Stage): { source: string; width: number; height: number } => {
+  const slot = stage.columns * CELL_WIDTH
+  const shown = actors.slice(0, MOST_ACTORS)
+  const homeRanks = new Map(shown.filter(actor => actor.status === 'completed').map((actor, rank) => [actor.id, rank]))
+  const rankOf = (actor: Actor): number => homeRanks.get(actor.id) ?? 0
+  // A wider band gets a longer path, not a taller band. Only a pane has the room to scale up.
+  const scale =
+    stage.rows === undefined
+      ? bandScale(shown, slot, rankOf)
+      : Math.max(BASE_SCALE, Math.min(WIDEST_SCALE, Math.round(slot / ART_WIDTH)))
+  const width = Math.max(110, Math.floor(slot / scale))
   const fitted = stage.rows === undefined ? null : Math.max(SHORTEST, Math.round((width * stage.rows * 2) / stage.columns))
   const defs = new Map<string, string>()
   const cast: Cast = {
@@ -724,15 +760,12 @@ export const sceneOf = (actors: readonly Actor[], stage: Stage): { source: strin
       return id
     },
   }
-  const shown = actors.slice(0, MOST_ACTORS)
-  const homeRanks = new Map(shown.filter(actor => actor.status === 'completed').map((actor, rank) => [actor.id, rank]))
-  const rankOf = (actor: Actor): number => homeRanks.get(actor.id) ?? 0
   // Where bubbles go depends on where agents stand, not how tall the sky is, so the rows are settled first.
   const spots = shown.map(actor => spotOf(actor, width, 0, rankOf(actor)))
-  const mostRows = fitted === null ? BAND_ROWS : Math.max(1, Math.floor((fitted - 28) / ROW_HEIGHT))
+  const mostRows = fitted === null ? bandRows(scale) : Math.max(1, Math.floor((fitted - SKY_LEFT) / BUBBLE_ROW))
   const bubbles = placed(shown, spots, width, mostRows)
   const skyNeeded = rowHeights(bubbles).reduce((sum, rowHeight) => sum + rowHeight + BUBBLE_GAP, 0)
-  const height = fitted ?? Math.max(SHORTEST, skyNeeded + 27)
+  const height = fitted ?? Math.max(SHORTEST, skyNeeded + SKY_LEFT)
   const spotted = bubbles.map(bubble => ({ ...bubble, spot: spotOf(bubble.actor, width, height, rankOf(bubble.actor)) }))
   const { tails, drawn } = drawBubbles(spotted, height, cast)
   // Those further up the path stand behind those nearer the screen.
@@ -747,12 +780,16 @@ export const sceneOf = (actors: readonly Actor[], stage: Stage): { source: strin
       ? at(Math.round(width / 2) - 4, groundOf(height) - 3, flipbook(FIRE.map(paint), 1.2)) +
         at(Math.round(width / 2) - 34, groundOf(height) - 12, `<g color="${INK}">${lettered('NO AGENTS RUNNING', cast)}</g>`)
       : ''
+  // The narrowest scene can be wider than its slot, and it shrinks to fit rather than run off the edge.
+  const fit = Math.min(1, slot / (width * scale), MOST_PIXELS / (Math.max(width, height) * scale))
+  const drawnWidth = Math.floor(width * scale * fit)
+  const drawnHeight = Math.floor(height * scale * fit)
   const source =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width * scale}" height="${height * scale}" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${drawnWidth}" height="${drawnHeight}" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges">` +
     `<defs><clipPath id="screen"><path d="${notched}"/></clipPath>${[...defs.values()].join('')}</defs>` +
     `<g clip-path="url(#screen)">${world(width, height, stage.clock)}${tails}${sprites}${drawn}${nobody}${fill(INK, edge)}</g></svg>`
 
-  return { source, height: height * scale }
+  return { source, width: drawnWidth, height: drawnHeight }
 }
 
 /** A campfire with nobody at it. It never changes, so it is drawn once and keeps burning. */

@@ -555,13 +555,12 @@ export const register: Register = on => {
 
       const { scene, alt } = await staged($, board, e.props.bodyColumns)
 
-      // No width or height: the surface fits the scene to the band and scales its height to match.
       return (
-        <Box>
-          <Svg source={scene.source} alt={alt} isInteractive />
-          <Box position="absolute" top={0} right={1}>
+        <Box flexDirection="column" alignItems="center">
+          <Box alignSelf="flex-end">
             <Button key="fill" label="Fill screen" plain onPress={() => expand($)} />
           </Box>
+          <Svg source={scene.source} alt={alt} width={scene.width} height={scene.height} isInteractive />
         </Box>
       )
     }
@@ -642,6 +641,6 @@ export const register: Register = on => {
     const { Svg } = $.ui.resolve(e)
     const { scene, alt } = await staged($, board, e.props.bodyColumns, e.props.scroll.bodyRows)
 
-    return <Svg source={scene.source} alt={alt} isInteractive />
+    return <Svg source={scene.source} alt={alt} width={scene.width} height={scene.height} isInteractive />
   })
 }
