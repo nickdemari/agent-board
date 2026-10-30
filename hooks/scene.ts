@@ -579,31 +579,29 @@ const drawActor = (actor: Actor, width: number, height: number, cast: Cast, home
   return `<g transform="translate(${x} ${y})">${walk}${run}</g>`
 }
 
-/** Words cut to whole lines of a width, the last one ending in dots if there was more. */
+/** Words cut to whole lines of a width. What does not fit is left out at a word's end, with no dots to say so. */
 const wrapped = (text: string, chars: number, lines: number): string[] => {
   const kept: string[] = []
   let line = ''
+  const whole = text.replace(/…|\.{2,}/g, ' ').toUpperCase().trim()
 
-  for (const word of text.toUpperCase().trim().split(/\s+/)) {
+  for (const word of whole === '' ? [] : whole.split(/\s+/)) {
     const piece = word.slice(0, chars)
 
     if (line !== '' && line.length + 1 + piece.length > chars) {
       kept.push(line)
+
+      if (kept.length === lines) {
+        return kept
+      }
+
       line = piece
     } else {
       line = line === '' ? piece : `${line} ${piece}`
     }
   }
 
-  kept.push(line)
-
-  if (kept.length <= lines) {
-    return kept
-  }
-
-  const last = kept[lines - 1] ?? ''
-
-  return [...kept.slice(0, lines - 1), `${last.slice(0, chars - 2).trimEnd()}..`]
+  return line === '' ? kept : [...kept, line]
 }
 
 const lettered = (text: string, cast: Cast): string =>

@@ -499,6 +499,25 @@ test('however many are on it, the scene stays short enough to show whole, and a 
   }
 })
 
+test('a bubble that runs out of room stops at a whole word, with no dots', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Task one', 'running'))
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  for (const doing of ['Reading the photo upload markup, the bucket switch and the env', 'Reading files...', 'Reading files…']) {
+    await reported($, 'a1', 1, 4, doing)
+    expect((await frameIn(ui)).source).not.toContain('#g46"')
+  }
+
+  // Its own trailing dots go, and the word before them stays: the S ends FILES.
+  expect((await frameIn(ui)).source).toContain('#g83"')
+
+  await ui.unmount()
+})
+
 test('a bubble says what the agent said it was doing, else its step at that report, else its task', async ($, on) => {
   const { clock, roster } = world(on)
   await begin($)
