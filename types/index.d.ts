@@ -24,6 +24,18 @@ export type BoardAgent = {
   endedAt: number | null
   /** Ended and passed by the person's next prompt: off the board, kept so the next poll does not add it back. */
   isCleared: boolean
+  /** The workflow run it is part of, which the engine's list does not name; '' for any other agent. */
+  run: string
+}
+
+/** One workflow run, as far as the board can tell from outside it. */
+export type BoardRun = {
+  name: string
+  /** The background task it runs as, which its notification names when it ends. */
+  task: string
+  /** How it ended; '' until then, even with all its agents done, since the script may yet start more. */
+  ended: '' | 'completed' | 'failed' | 'killed'
+  endedAt: number
 }
 
 /** One step of the main agent's own task list. */
@@ -38,6 +50,7 @@ declare module 'claude-code' {
       steps: Record<string, string>
       isExpanded: boolean
       plan: PlanStep[]
+      runs: Record<string, BoardRun>
     }
   }
 }

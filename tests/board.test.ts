@@ -30,7 +30,14 @@ const world = (on: On) => {
   on('prompt.submit', (_$, e) => ({ text: e.text }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
-  on('tool.call', () => ({ result: 'ok' }))
+  // A Workflow call's script stands in for the run's id, which keeps each test's run its own.
+  on('tool.call', (_$, e) => {
+    const { script } = e as unknown as { script?: string }
+
+    return {
+      result: String(e.tool) === 'Workflow' ? { status: 'async_launched', taskId: `task-${script}`, runId: script, workflowName: 'review-changes' } : 'ok',
+    } as never
+  })
   on('tool.register', (_$, e) => ({ value: { tool: `mcp__agent-board__${e.name}` } }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.panes', () => ({ value: [] }))
@@ -497,6 +504,160 @@ test('however many are on it, the scene stays short enough to show whole, and a 
 
     await ui.unmount()
   }
+})
+
+const launched = ($: Engine, run: string) => $.tool.call({ tool: 'Workflow', tool_use_id: `call-${run}`, script: run } as never)
+const startedIn = ($: Engine, run: string, agentIndex: number, description = `Step ${agentIndex}`) =>
+  $.agent.spawn({
+    tool_use_id: `call-${run}`,
+    prompt: 'Review it.',
+    description,
+    subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'haiku',
+    background: true,
+    fork: false,
+    workflow: { runId: run, agentIndex },
+  })
+const ended = ($: Engine, agentId: string, reason: 'answer' | 'aborted' | 'error' = 'answer') =>
+  $.turn.complete({ answer: 'done', durationMs: 1000, isAborted: reason === 'aborted', turnId: `t-${agentId}`, reason, agentId })
+const notified = ($: Engine, run: string, status = 'completed') =>
+  $.prompt.submit({
+    text: `<task-notification><task-id>task-${run}</task-id><status>${status}</status></task-notification>`,
+    wait: false,
+    origin: { kind: 'task-notification' },
+  })
+/** The engine beneath a workflow's spawns: each agent's id says which it is. */
+const spawning = (on: On, prompts: string[] = []) =>
+  on('agent.spawn', (_$, e) => {
+    prompts.push(e.prompt)
+
+    return { model: 'haiku', agentId: `${e.workflow?.runId}-${e.workflow?.agentIndex}` }
+  })
+
+test('a workflow run is on the board as one squad, though the list never names its agents', async ($, on) => {
+  const { clock } = world(on)
+  const prompts: string[] = []
+  spawning(on, prompts)
+  await begin($)
+  await launched($, 'wf_a')
+  await startedIn($, 'wf_a', 1)
+  await startedIn($, 'wf_a', 2)
+  await clock.advance(POLL * 3)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'No agents running')).toBe(false)
+  expect(await says(ui, 'review changes: 0/2 done')).toBe(true)
+  expect(await says(ui, 'Step 1')).toBe(false)
+  expect(prompts).toEqual(['Review it.', 'Review it.'])
+  await ui.unmount()
+})
+
+test('a squad counts its agents as their turns end, and says how many failed', async ($, on) => {
+  const { clock } = world(on)
+  spawning(on)
+  await begin($)
+  await launched($, 'wf_b')
+  await Promise.all([1, 2, 3].map(n => startedIn($, 'wf_b', n)))
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ended($, 'wf_b-1')
+  await clock.advance(POLL)
+  expect(await says(ui, 'review changes: 1/3 done')).toBe(true)
+
+  await ended($, 'wf_b-2', 'error')
+  expect(await says(ui, 'review changes: 2/3 done · 1 failed')).toBe(true)
+  await ui.unmount()
+})
+
+test('a run with every agent done so far is not over: it can start more, and its party waits for its end', async ($, on) => {
+  const { clock } = world(on)
+  spawning(on)
+  await begin($)
+  await launched($, 'wf_c')
+  await startedIn($, 'wf_c', 1)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ended($, 'wf_c-1')
+  await clock.advance(POLL)
+  expect(await says(ui, 'review changes: 1/1 done · Waiting')).toBe(true)
+  expect((await frameIn(ui)).source).not.toContain('dur="1.2s"')
+
+  // The script decides on another stage, and the squad's share falls back to match.
+  await startedIn($, 'wf_c', 2)
+  await startedIn($, 'wf_c', 3)
+  expect(await says(ui, 'review changes: 1/3 done')).toBe(true)
+
+  await notified($, 'wf_c')
+  expect(await says(ui, 'review changes: 3/3 done')).toBe(true)
+  expect((await frameIn(ui)).source).toContain('dur="1.2s"')
+
+  // The notification wakes the main agent: the redraw that brings keeps the party.
+  await $.turn.start({ text: '', turnId: 't-wake' })
+  expect((await frameIn(ui)).source).toContain('dur="1.2s"')
+
+  // A later change is the end of it.
+  await clock.advance(POLL * 2)
+  await startedIn($, 'wf_c2', 1)
+  expect((await frameIn(ui)).source).not.toContain('dur="1.2s"')
+  await ui.unmount()
+})
+
+test('a run that failed says so, and two runs stay apart', async ($, on) => {
+  const { clock } = world(on)
+  spawning(on)
+  await begin($)
+  await launched($, 'wf_d')
+  await startedIn($, 'wf_d', 1)
+  await startedIn($, 'wf_e', 1)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'review changes: 0/1 done')).toBe(true)
+  // One whose Workflow call has not come back yet has no name to go by.
+  expect(await says(ui, 'Workflow: 0/1 done')).toBe(true)
+
+  await notified($, 'wf_d', 'failed')
+  expect(await says(ui, 'review changes: 1/1 done · Failed')).toBe(true)
+  expect(await says(ui, 'Workflow: 0/1 done')).toBe(true)
+  await ui.unmount()
+})
+
+test('his next prompt clears a run with nothing left running, and leaves a running one its count', async ($, on) => {
+  const { clock } = world(on)
+  spawning(on)
+  await begin($)
+  await launched($, 'wf_f')
+  await startedIn($, 'wf_f', 1)
+  await startedIn($, 'wf_f', 2)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await ended($, 'wf_f-1')
+  await typed($, 'next')
+  await clock.advance(POLL)
+  expect(await says(ui, 'review changes: 1/2 done')).toBe(true)
+
+  await ended($, 'wf_f-2')
+  await typed($, 'next')
+  await clock.advance(POLL)
+  expect(await says(ui, 'review changes')).toBe(false)
+  expect(await says(ui, 'No agents running')).toBe(true)
+  await ui.unmount()
+})
+
+test('past what the path holds, the rest fold into one squad, and a full path is left alone', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(...Array.from({ length: 12 }, (_, n) => agent(`a${n}`, `Task ${n}`, 'running')))
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'more agents')).toBe(false)
+
+  roster.push(...Array.from({ length: 8 }, (_, n) => agent(`b${n}`, `Other ${n}`, 'running')))
+  await clock.advance(POLL)
+  expect(await says(ui, '9 more agents: 0/9 done')).toBe(true)
+  await ui.unmount()
 })
 
 test('a bubble shows its whole thought, and a thought too long to be small is replaced, never cut', async ($, on) => {

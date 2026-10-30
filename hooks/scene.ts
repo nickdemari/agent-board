@@ -16,6 +16,10 @@ export type Actor = {
   thought: string
   /** The bubble's second line: how far along, and how long is left as of its last report. */
   words: string
+  /** Others drawn with it, under its one bubble: a squad, standing for more agents than the path has room for. */
+  pack?: readonly Pick<Actor, 'kind' | 'seat'>[]
+  /** How far it stands from its place, for one of a pack. */
+  nudge?: number
 }
 
 export type Stage = {
@@ -33,7 +37,8 @@ const MOST_PIXELS = 4096
 const BASE_SCALE = 4
 const WIDEST_SCALE = 8
 const SMALLEST_SCALE = 2
-// How tall a scene can be and still show whole above the prompt. Past this the band scrolls, and hides the ground or the button.
+// How tall a scene can be and still show whole above the prompt, under the button, in the twelve rows a band gets.
+// Past this the band scrolls, and hides the ground or the button.
 const BAND_PIXELS = 215
 const ART_WIDTH = 170
 const SPRITE_WIDTH = 12
@@ -46,7 +51,8 @@ const SKY_LEFT = 25
 const BUBBLE_GAP = 2
 // How wide a bubble's lines start. A longer thought widens them rather than lose any of its words.
 const LINE_CHARS = 16
-const MOST_ACTORS = 12
+export const MOST_ACTORS = 12
+const PACK_STEP = 7
 
 const INK = '#222034'
 
@@ -199,7 +205,7 @@ const costumeOf = (kind: string): Costume => {
     return 'wizard'
   }
 
-  return kind === 'general-purpose' || kind === 'claude' ? 'knight' : 'rogue'
+  return kind === 'general-purpose' || kind === 'workflow-subagent' || kind === 'claude' ? 'knight' : 'rogue'
 }
 
 // The body under the head: five rows, or four where the pose sits lower.
@@ -478,6 +484,9 @@ const confetti = (): string => {
   }).join('')
 }
 
+/** A pack trails behind its leader, and goes ahead where that would put it back in camp. */
+const nudged = (x: number, nudge = 0): number => (x + nudge < FIRST_STEP ? x - nudge : x + nudge)
+
 const footing = (height: number, seat: number): number => height - 5 + (seat % 3)
 
 type Cast = {
@@ -514,10 +523,10 @@ const drawActor = (actor: Actor, width: number, height: number, cast: Cast, home
   const sprite = (pose: string, grid: readonly string[]): string =>
     `<g color="${color}">${cast.sprite(`${costume}-${pose}`, grid)}</g>`
   const percent = actor.percent
-  const x = xOf(percent ?? 0, width)
+  const x = nudged(xOf(percent ?? 0, width), actor.nudge)
 
   if (actor.status === 'completed') {
-    const home = xOf(100, width) - homeRank * 9
+    const home = nudged(xOf(100, width) - homeRank * 9, actor.nudge)
     const hop = flipbook(
       [
         sprite('cheer-a', person(costume, 'stand', 'open')),
@@ -704,6 +713,18 @@ const drawBubbles = (bubbles: readonly Bubble[], height: number, cast: Cast): { 
   return { tails, drawn }
 }
 
+/** The rest of its pack, doing as it does. Only a leader gets the storm cloud, and the party. */
+const followersOf = (actor: Actor): Actor[] =>
+  (actor.pack ?? []).map((one, i) => ({
+    ...actor,
+    ...one,
+    id: `${actor.id}-${i}`,
+    status: actor.status === 'failed' ? 'killed' : actor.status,
+    isFresh: false,
+    pack: [],
+    nudge: -PACK_STEP * (i + 1),
+  }))
+
 const bandRows = (scale: number): number => Math.max(1, Math.floor((BAND_PIXELS / scale - SKY_LEFT) / BUBBLE_ROW))
 
 /** A band's pixels: the largest that shows everyone's bubble in the height a band has, else whichever shows the most. */
@@ -762,9 +783,10 @@ export const sceneOf = (actors: readonly Actor[], stage: Stage): { source: strin
   const spotted = bubbles.map(bubble => ({ ...bubble, spot: spotOf(bubble.actor, width, height, rankOf(bubble.actor)) }))
   const { tails, drawn } = drawBubbles(spotted, height, cast)
   // Those further up the path stand behind those nearer the screen.
-  const sprites = [...shown]
-    .sort((a, b) => a.seat % 3 - b.seat % 3)
-    .map(actor => drawActor(actor, width, height, cast, rankOf(actor)))
+  const sprites = shown
+    .flatMap(actor => [actor, ...followersOf(actor)].map(one => ({ one, rank: rankOf(actor) })))
+    .sort((a, b) => a.one.seat % 3 - b.one.seat % 3)
+    .map(({ one, rank }) => drawActor(one, width, height, cast, rank))
     .join('')
   const edge = rect(1, 0, width - 2, 1) + rect(1, height - 1, width - 2, 1) + rect(0, 1, 1, height - 2) + rect(width - 1, 1, 1, height - 2)
   const notched = `M1 0H${width - 1}V1H${width}V${height - 1}H${width - 1}V${height}H1V${height - 1}H0V1H1Z`
