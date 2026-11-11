@@ -30,11 +30,12 @@ const PROGRESS_ASK = `
 Progress: if a tool named ${PROGRESS_TOOL} is available to you, call it before your first step with done 0, total set to how many steps you expect, and doing set to what you are about to do in four words or fewer. Call it again each time you finish a step, alongside your next tool call, and once more with done equal to total just before your final reply. Raise total if the work grows. Leave this out of your report.`
 
 // Change the tag when an agent's fields change: it declines what an earlier version stored.
-const agents = atom({ plugin: 'agent-board', key: 'agents' } as const, [], { shape: 'agents-6' })
+const agents = atom({ plugin: 'agent-board', key: 'agents' } as const, [], { shape: 'agents-7' })
 // The time durations are read against. The board shows whole minutes, so this moves only often
 // enough to keep them right, and the band is not redrawn at every poll.
 const now = atom({ plugin: 'agent-board', key: 'now' } as const, 0)
 const steps = atom({ plugin: 'agent-board', key: 'steps' } as const, {})
+const seen = atom({ plugin: 'agent-board', key: 'seen' } as const, {})
 const isExpanded = atom({ plugin: 'agent-board', key: 'isExpanded' } as const, false)
 const plan = atom({ plugin: 'agent-board', key: 'plan' } as const, [])
 const runs = atom({ plugin: 'agent-board', key: 'runs' } as const, {})
@@ -191,6 +192,12 @@ const leftOf = (one: BoardAgent, at: number): string => {
 /** Nobody just finished: a report's flight is for one drawing, so the next must not play it again. */
 const settled = (one: BoardAgent): BoardAgent => ({ ...one, isFresh: false })
 
+/** At work again under the same id, whatever its last turn said. */
+const reopened = (list: readonly BoardAgent[], id: string): BoardAgent[] =>
+  list.map(one =>
+    one.id === id ? { ...settled(one), status: 'running', left: '', endedAt: null, isCleared: false, isSettled: false } : settled(one),
+  )
+
 const joined = (...parts: string[]): string => parts.filter(part => part !== '').join(' · ')
 
 /** A bubble's second line. It reads no clock: the scene is only redrawn when an agent reports or changes status. */
@@ -337,6 +344,7 @@ const mainAt = (at: number): BoardAgent => ({
   run: '',
   wave: 0,
   atCopier: false,
+  isSettled: false,
 })
 
 /** The task list after one call of the tool that keeps it: a whole new list, or the steps it moved. */
@@ -419,11 +427,16 @@ const merged = (board: readonly BoardAgent[], listed: readonly AgentInfo[], at: 
       return [hasEnded(one.status) ? one : { ...one, status: 'gone', left: '', endedAt: at }]
     }
 
-    // An ended agent a message resumes keeps its id, and comes back to the board.
     if (hasEnded(info.status)) {
       return [{ ...one, label: labelOf(info), status: info.status, left: '', endedAt: one.endedAt ?? at }]
     }
 
+    // Its turn said how it ended, and a list that still calls it busy is behind.
+    if (one.isSettled) {
+      return [{ ...one, label: labelOf(info) }]
+    }
+
+    // An ended agent a message resumes keeps its id, and comes back to the board.
     return [{ ...one, label: labelOf(info), status: info.status, endedAt: null, isCleared: false }]
   })
   const seats = new Set(kept.map(one => one.seat))
@@ -454,6 +467,7 @@ const merged = (board: readonly BoardAgent[], listed: readonly AgentInfo[], at: 
         run: '',
         wave: 0,
         atCopier: false,
+        isSettled: false,
       }
     })
   const next = [...kept, ...fresh]
@@ -467,6 +481,8 @@ const merged = (board: readonly BoardAgent[], listed: readonly AgentInfo[], at: 
 }
 
 let thoughtAt = 0
+// When the scene last took the steps of a run's agents.
+let seenAt = 0
 // A drawing held back for ACTIVITY_MS, which the next poll past that lets through.
 let isHeldBack = false
 let drawnAt = 0
@@ -492,6 +508,17 @@ const sync = async ($: EngineInterface): Promise<void> => {
   if (main !== undefined && main.total === 0 && step !== '' && step !== main.thought && at - thoughtAt >= THOUGHT_MS) {
     thoughtAt = at
     await update($, agents, list => reported(list, MAIN, 0, 0, step, at))
+  }
+
+  // A run's agents say what they touch, which the scene takes with its other news: a tool call alone wakes no drawing.
+  if (at - seenAt >= ACTIVITY_MS) {
+    const onRuns = new Set(board.filter(one => one.run !== '' && !one.isCleared).map(one => one.id))
+    const latest = Object.fromEntries(Object.entries(await read($, steps)).filter(([id]) => onRuns.has(id)))
+
+    if (JSON.stringify(latest) !== JSON.stringify(await read($, seen))) {
+      seenAt = at
+      await update($, seen, () => latest)
+    }
   }
 
   if (isHeldBack && at - drawnAt >= ACTIVITY_MS) {
@@ -527,7 +554,7 @@ const placed = (actor: Actor): Actor => {
 
 const staged = async ($: EngineInterface, board: readonly BoardAgent[], columns: number, rows?: number) => {
   const at = await $.clock.now()
-  const office = officeOf(board, await read($, runs), await read($, steps), at)
+  const office = officeOf(board, await read($, runs), await read($, seen), at)
   const alt = altOf(office)
   const view = rows === undefined ? 'band' : 'pane'
   const key = JSON.stringify([office, columns, rows])
@@ -551,6 +578,15 @@ const staged = async ($: EngineInterface, board: readonly BoardAgent[], columns:
   drawings.set(view, { key, hard, scene })
   drawnAt = at
 
+  // Only who is on this drawing can walk on the next.
+  const drawn = new Set(office.departments.flatMap(one => one.agents.map(actor => actor.id)))
+
+  for (const id of lastPlace.keys()) {
+    if (!drawn.has(id)) {
+      lastPlace.delete(id)
+    }
+  }
+
   return { scene, alt }
 }
 
@@ -559,6 +595,7 @@ export const register: Register = on => {
     drawings.clear()
     lastPlace.clear()
     isHeldBack = false
+    seenAt = 0
     await $.command.register({ name: 'agent-board', description: 'Show the agent board as large as a pane allows' })
     await update($, isExpanded, () => false)
 
@@ -619,32 +656,79 @@ export const register: Register = on => {
       if (list.some(one => isPast(one) && !one.isCleared)) {
         await update($, agents, now => now.map(one => (isPast(one) ? { ...settled(one), isCleared: true } : settled(one))))
       }
+
+      // What it cleared needs no step, and a run that has ended with nothing left on the board needs no record.
+      const kept = (await read($, agents)).filter(one => !one.isCleared)
+      const onBoard = new Set([MAIN, ...kept.map(one => one.id)])
+      const runsOnBoard = new Set(kept.map(one => one.run))
+      const isKept = ([id, run]: [string, BoardRun]): boolean => run.ended === '' || runsOnBoard.has(id)
+
+      if (Object.keys(await read($, steps)).some(id => !onBoard.has(id))) {
+        await update($, steps, known => Object.fromEntries(Object.entries(known).filter(([id]) => onBoard.has(id))))
+      }
+
+      if (!Object.entries(await read($, runs)).every(isKept)) {
+        await update($, runs, known => Object.fromEntries(Object.entries(known).filter(isKept)))
+      }
     }
 
     return next(e)
   })
 
   on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) {
+    const id = e.agentId
+
+    if (id === undefined) {
       const at = await $.clock.now()
 
       await update($, plan, () => [])
       await update($, steps, known => ({ ...known, [MAIN]: '' }))
       await update($, agents, list => [mainAt(at), ...list.filter(one => one.id !== MAIN).map(settled)])
+    } else if ((await read($, agents)).some(one => one.id === id && one.isSettled)) {
+      // A new run of its loop.
+      await update($, agents, list => reopened(list, id))
     }
 
     return next(e)
   })
 
+  // An agent's turn is how it ended. The engine's list can drop it before a poll sees that, so the board takes it from here.
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) {
+    const id = e.agentId
+
+    if (id === undefined) {
       await update($, agents, list => list.filter(one => one.id !== MAIN).map(settled))
-    } else if ((await read($, agents)).some(one => one.id === e.agentId && one.run !== '')) {
+
+      return next(e)
+    }
+
+    let record = (await read($, agents)).find(one => one.id === id)
+    const listed = record === undefined || record.run === '' ? await $.agent.list() : []
+
+    // One that started and ended between two polls: its end is the first the board hears of it, and the list still has it.
+    // Forks and compactions are in no list, and stay off the board.
+    if (record === undefined && listed.some(info => info.id === id)) {
       const at = await $.clock.now()
-      const status = e.reason === 'answer' ? 'completed' : e.reason === 'aborted' ? 'killed' : 'failed'
+
+      await update($, agents, list => merged(list, listed, at))
+      record = (await read($, agents)).find(one => one.id === id)
+    }
+
+    if (record === undefined || (hasEnded(record.status) && record.status !== 'gone')) {
+      return next(e)
+    }
+
+    // A teammate that answers has only gone idle, which the list says.
+    const isTeammate = record.run === '' && listed.some(info => info.id === id && info.teammateId !== undefined)
+
+    if (e.reason !== 'answer' || !isTeammate) {
+      const at = await $.clock.now()
+      const status: BoardStatus = e.reason === 'answer' ? 'completed' : e.reason === 'aborted' ? 'killed' : 'failed'
 
       await update($, agents, list =>
-        list.map(one => (one.id === e.agentId ? { ...settled(one), status, left: '', endedAt: at, isFresh: status === 'completed' } : settled(one))),
+        list.map(one =>
+          one.id === id ? { ...settled(one), status, left: '', endedAt: at, isFresh: status === 'completed', isSettled: true } : settled(one),
+        ),
       )
     }
 
@@ -778,6 +862,11 @@ export const register: Register = on => {
 
     // Forks and compactions call tools under ids the list never names: not his agents.
     const record = (await read($, agents)).find(one => one.id === id)
+
+    // An ended agent makes no calls, so one that does is at work again, though no new turn said so.
+    if (record?.isSettled === true) {
+      await update($, agents, list => reopened(list, id))
+    }
 
     if (!isQuiet && record !== undefined) {
       const step = stepOf(e.tool, e)

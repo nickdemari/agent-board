@@ -26,6 +26,8 @@ export type BoardAgent = {
   wave: number
   /** Its latest tool was a command, which it runs at the copier. */
   atCopier: boolean
+  /** Its own turn said how it ended. A list that still calls it busy is behind, and only its next turn brings it back. */
+  isSettled: boolean
 }
 
 /** One stage of a workflow, as its script's `meta` lists it. */
@@ -52,6 +54,8 @@ declare module 'claude-code' {
       now: number
       /** The latest step of each agent, which only the terminal's rows read: the scene must not redraw for a step. */
       steps: Record<string, string>
+      /** The steps of a run's agents as the scene shows them, taken from `steps` no more often than its other news. */
+      seen: Record<string, string>
       isExpanded: boolean
       plan: PlanStep[]
       runs: Record<string, BoardRun>

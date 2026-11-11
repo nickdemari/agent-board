@@ -1,6 +1,6 @@
 {
   "name": "agent-board",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A pixel-art office above the prompt where this session's agents sit at their cubicles, each with a thought bubble saying what it is doing, its percent done and time left.",
   "types": "./types/index.d.ts",
   "author": {

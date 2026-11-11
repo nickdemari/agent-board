@@ -950,3 +950,141 @@ test('a survey holds the band: the board yields to it', async ($, on) => {
   expect(await says(ui, /No agents/)).toBe(false)
   await ui.unmount()
 })
+
+test('an agent whose turn fails reads failed, though the engine drops it before a poll sees how it ended', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Look up the docs', 'running'), agent('a2', 'Other', 'running'))
+  await clock.advance(POLL)
+
+  await ended($, 'a1', 'error')
+  roster.splice(0, 1)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'Look up the docs: Failed')).toBe(true)
+  expect(await says(ui, /Ended/)).toBe(false)
+  await ui.unmount()
+})
+
+test('an agent whose turn answers is done, and its report flies, though the engine drops it first', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Sweep the routes', 'running'), agent('a2', 'Other', 'running'))
+  await clock.advance(POLL)
+
+  await ended($, 'a1')
+  roster.splice(0, 1)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'Sweep the routes: Done')).toBe(true)
+  expect(await sceneIn(ui)).toContain('dur=\\"2s\\"')
+  await ui.unmount()
+})
+
+test('a list that lags the turn does not bring a failed agent back; its next turn does; a teammate that answers is only idle', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push({ ...agent('m1', 'Watch the build', 'running'), teammateId: 'watcher@team' }, agent('a1', 'Trace the refresh', 'running'))
+  await clock.advance(POLL)
+
+  await ended($, 'm1')
+  await ended($, 'a1', 'error')
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'Watch the build: Working')).toBe(true)
+  expect(await says(ui, 'Trace the refresh: Failed')).toBe(true)
+
+  await $.turn.start({ text: 'try again', turnId: 't-a1-2', agentId: 'a1' })
+  await clock.advance(POLL)
+  expect(await says(ui, 'Trace the refresh: Working')).toBe(true)
+
+  // An ended agent makes no calls: one under its id says it is at work again, even with no new turn.
+  await ended($, 'a1', 'error')
+  await clock.advance(POLL)
+  expect(await says(ui, 'Trace the refresh: Failed')).toBe(true)
+
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/a/login.ts', agentId: 'a1' })
+  await clock.advance(POLL)
+  expect(await says(ui, 'Trace the refresh: Working')).toBe(true)
+  await ui.unmount()
+})
+
+test('an agent that starts and fails between two polls still reaches the board, failed', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Look up the docs', 'running'))
+
+  await ended($, 'a1', 'error')
+  roster.length = 0
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await says(ui, 'Look up the docs: Failed')).toBe(true)
+  await ui.unmount()
+})
+
+test('a run agent touching a file reaches the scene with the rest of its news, and the tool call alone wakes no drawing', async ($, on) => {
+  const { clock } = world(on)
+  let drawings = 0
+  spawning(on)
+  on('state.get', (_$, e, next) => {
+    if ((e as { key?: string }).key === 'runs') {
+      drawings += 1
+    }
+
+    return next(e)
+  })
+  await begin($)
+  await launched($, 'wf_t')
+  await startedIn($, 'wf_t', 1)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await sceneIn(ui)
+  const before = drawings
+
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/a/login.ts', agentId: 'wf_t-1' })
+  await sceneIn(ui)
+  expect(drawings).toBe(before)
+
+  await clock.advance(ACTIVITY)
+  expect((await frameIn(ui)).source).toContain('<title>Step 1: login.ts')
+  await ui.unmount()
+})
+
+test('his next prompt lets go of the steps and runs of what it clears', async ($, on) => {
+  const { clock, roster } = world(on)
+  const stored: Record<string, unknown> = {}
+  spawning(on)
+  on('state.set', (_$, e, next) => {
+    const { key, value } = e as { key?: string; value?: unknown }
+
+    if (key !== undefined) {
+      stored[key] = value
+    }
+
+    return next(e)
+  })
+  await begin($)
+  const one = agent('a1', 'Sweep the routes', 'running')
+  roster.push(one, agent('a2', 'Still going', 'running'))
+  await clock.advance(POLL)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u1', file_path: '/a/login.ts', agentId: 'a1' })
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u2', file_path: '/a/routes.ts', agentId: 'a2' })
+  await launched($, 'wf_p')
+  await startedIn($, 'wf_p', 1)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u3', file_path: '/a/forecast.ts', agentId: 'wf_p-1' })
+  await ended($, 'wf_p-1')
+  await notified($, 'wf_p')
+  one.status = 'completed'
+  await clock.advance(POLL)
+
+  await typed($, 'next')
+
+  // The main agent's step stays: its next turn starts it over.
+  expect(Object.keys(stored.steps ?? {}).sort()).toEqual(['a2', 'main'])
+  expect(Object.keys(stored.runs ?? {})).toEqual([])
+})
