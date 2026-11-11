@@ -243,9 +243,9 @@ const actorOf = (one: BoardAgent, step: string): Actor => {
     label: one.label,
     thought: isOnRun ? runThoughtOf(one, step) : one.thought === '' ? brief(one.label, 'On its task') : one.thought,
     words: isOnRun && !hasEnded(one.status) ? '' : wordsOf(one),
-    // One waiting on him is at its desk with its hand up, whatever it last ran.
-    atCopier: one.atCopier && one.status !== 'waiting',
-    wasAtCopier: one.atCopier && one.status !== 'waiting',
+    // Whatever it last ran, one waiting on him is at its desk with its hand up, and an idle one is asleep there.
+    atCopier: one.atCopier && one.status !== 'waiting' && one.status !== 'idle',
+    wasAtCopier: one.atCopier && one.status !== 'waiting' && one.status !== 'idle',
   }
 }
 

@@ -1201,9 +1201,17 @@ const PANE = (bodyColumns: number, bodyRows: number) =>
 test('a crowd with a lot to say still fits what a surface will take: cards go, then desks, and everyone is still drawn', async ($, on) => {
   const { clock, roster } = world(on)
   await begin($)
-  roster.push(...Array.from({ length: 120 }, (_, n) => agent(`a${n}`, `Trace how the session token is refreshed across every route ${n}`, 'running')))
+  // More than a surface will take with a desk each, however little each desk costs.
+  const CROWD = 150
+
+  roster.push(...Array.from({ length: CROWD }, (_, n) => agent(`a${n}`, `Trace how the session token is refreshed across every route ${n}`, 'running')))
   await clock.advance(POLL)
-  await Promise.all(roster.map((one, n) => reported($, one.id, n % 9, 12, 'Reading the photo upload markup closely')))
+
+  // One at a time: reports that land together are written over each other, and take the longer for it.
+  for (const [n, one] of roster.entries()) {
+    await reported($, one.id, n % 9, 12, 'Reading the photo upload markup closely')
+  }
+
   await clock.advance(ACTIVITY)
 
   const pane = await $.ui.mount(PANE(100, 50))
@@ -1215,8 +1223,8 @@ test('a crowd with a lot to say still fits what a surface will take: cards go, t
   const tiny = /<path fill="#8A8FA3" d="([^"]*)"/.exec(tall)?.[1]?.match(/M/g)?.length ?? 0
 
   expect(desks).toBeGreaterThan(8)
-  expect(desks).toBeLessThan(120)
-  expect(desks + tiny).toBe(120)
+  expect(desks).toBeLessThan(CROWD)
+  expect(desks + tiny).toBe(CROWD)
   await pane.unmount()
 
   const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 200 } })
@@ -1321,5 +1329,129 @@ test('an agent with nothing to its name is drawn without a card, and the drawing
   const { source } = await frameIn(ui)
 
   expect(source).not.toMatch(/Infinity|NaN/)
+  await ui.unmount()
+})
+
+// The light that goes to and fro under the copier's lid.
+const SCANNING = /<path fill="#FFFFFF" d="M0 0h3v1h-3z" transform="translate\(7 \d+\)"><animateTransform/
+
+test('an agent at its desk types, and one waiting on him or asleep holds still', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  const one = agent('a1', 'Draft the migration', 'running')
+  roster.push(one)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const sourceOf = async (): Promise<string> => (await frameIn(ui)).source
+  const typing = await sourceOf()
+
+  // Its head is down over the keys for two thirds of its turn and up for the rest, where its eyelids come down once.
+  expect(typing).toContain('<use href="#typist-b-0"')
+  expect(typing).toMatch(/<g id="typist-b-0"><g><animateTransform attributeName="transform" type="translate" values="0 1;0 0" keyTimes="0;0\.667"[^>]*\/><use href="#head-b"\/><\/g><use href="#lids-0"/)
+  expect(typing).toContain('<g id="lids-0"><g visibility="hidden"><animate attributeName="visibility" values="hidden;visible;hidden" keyTimes="0;0.75;0.833"')
+  // A glint goes along its strip, a pixel at a time.
+  expect(typing).toContain('<use href="#glint-11-0"')
+  expect(typing).toContain('<g id="glint-11-0"><path fill="#E4F6FB" d="M0 0h2v3h-2z"><animateTransform attributeName="transform" type="translate" values="0 0;1 0;2 0;')
+
+  one.status = 'waiting'
+  await clock.advance(POLL)
+  expect(await sourceOf()).not.toMatch(/typist-|glint-|lids-/)
+
+  one.status = 'idle'
+  await clock.advance(POLL)
+  expect(await sourceOf()).not.toMatch(/typist-|glint-|lids-/)
+  await ui.unmount()
+})
+
+test('the copier scans while someone runs a command at it, whose desk is still until they have walked back', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  const one = agent('a1', 'Run the suite', 'running')
+  roster.push(one)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const sourceOf = async (): Promise<string> => (await frameIn(ui)).source
+
+  expect(await sourceOf()).not.toMatch(SCANNING)
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'u1', command: 'npm test', description: 'Running the tests', agentId: 'a1' })
+  await clock.advance(ACTIVITY)
+  expect(await sourceOf()).toMatch(SCANNING)
+  expect(await sourceOf()).not.toMatch(/typist-|glint-/)
+
+  // Idle, it is asleep at its desk whatever it last ran, and the copier has nobody to scan for.
+  one.status = 'idle'
+  await clock.advance(POLL)
+  expect(await sourceOf()).not.toMatch(SCANNING)
+  expect(await sourceOf()).not.toMatch(/typist-|glint-/)
+
+  // At work again and on to something else, it walks back. Its head and its strip's glint are not drawn until it is there.
+  one.status = 'running'
+  await clock.advance(POLL)
+  await $.tool.call({ tool: 'Read', tool_use_id: 'u2', file_path: '/a/login.ts', agentId: 'a1' })
+  await clock.advance(ACTIVITY)
+
+  const back = await sourceOf()
+  const held = '<g display="none"><set attributeName="display" to="inline" begin="2s"/>'
+
+  expect(back).not.toMatch(SCANNING)
+  expect(back).toContain(`${held}<use href="#typist-b-0"`)
+  expect(back).toContain(`${held}<use href="#glint-11-0"`)
+  await ui.unmount()
+})
+
+test('a row of agents does not type as one', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'One', 'running'), agent('a2', 'Two', 'running'), agent('a3', 'Three', 'running'))
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const { source } = await frameIn(ui)
+  // Each head's turn, by where in it the head starts: one from the top, and the others a third and two thirds in.
+  const leads = [...source.matchAll(/<g id="typist-\w-\d"><g><animateTransform [^>]*?( begin="-[\d.]+s")? dur="2\.4s"/g)].map(found => found[1]?.trim() ?? '')
+
+  expect(leads.sort()).toEqual(['', 'begin="-0.8s"', 'begin="-1.6s"'])
+  await ui.unmount()
+})
+
+test('in fill screen its hands are on the keys and its screen fills as it types, and stands as it was left while it is at the copier', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Draft the migration', 'running'), agent('a2', 'Review it', 'waiting'))
+  await clock.advance(POLL)
+
+  const pane = await $.ui.mount(PANE(60, 40))
+  const sourceOf = async (): Promise<string> => (await frameIn(pane)).source
+  const typing = await sourceOf()
+
+  // One pair of hands, at the desk of the one that is working, and a line on its screen that grows.
+  expect(typing.match(/<use href="#hands-\d"/g)).toEqual(['<use href="#hands-0"'])
+  // One hand is up as the other comes down.
+  expect(typing).toMatch(/<g id="hands-0"><path fill="#EEC39A" d="M6 -3h1v1h-1z"><animateTransform attributeName="transform" type="translate" values="0 -1;0 0;[^>]*\/><\/path><path fill="#EEC39A" d="M8 -3h1v1h-1z"><animateTransform attributeName="transform" type="translate" values="0 0;0 -1;/)
+  expect(typing).toContain('<use href="#screen-busy-0"')
+  expect(typing).toContain('<animate attributeName="width" values="2;4;6;7"')
+
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'u1', command: 'npm test', description: 'Running the tests', agentId: 'a1' })
+  await clock.advance(ACTIVITY)
+  const away = await sourceOf()
+
+  expect(away).not.toContain('#hands-')
+  expect(away).toContain('<use href="#screen-busy-left"')
+  expect(away).not.toContain('attributeName="width"')
+  await pane.unmount()
+})
+
+test('the main agent blinks', async ($, on) => {
+  world(on)
+  await begin($)
+  await $.turn.start({ text: 'Wire up the auth flow', turnId: 't1' })
+
+  const ui = await $.ui.mount({ ...WORKING, surface: 'desktop' })
+  const { source } = await frameIn(ui)
+
+  expect(source).toMatch(/<use href="#boss-stand"\/><g visibility="hidden"><animate attributeName="visibility" values="hidden;visible" keyTimes="0;0\.938" dur="3\.2s"/)
   await ui.unmount()
 })

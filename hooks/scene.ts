@@ -106,6 +106,7 @@ const DARK = '#474A5C'
 const SKY = '#5FCDE4'
 const GLASS = '#BDEBF2'
 const RED = '#D95763'
+const SKIN = '#EEC39A'
 
 const TUNICS = ['#5B6EE1', '#DF7126', '#D77BBA', '#37946E', '#FBF236', '#639BFF', '#76428A', '#8F563B'] as const
 
@@ -116,7 +117,7 @@ type Grid = readonly string[]
 
 const COLORS: Readonly<Record<string, string>> = {
   k: INK,
-  s: '#EEC39A',
+  s: SKIN,
   r: '#AC3232',
   g: '#FBF236',
   w: '#FFFFFF',
@@ -202,6 +203,8 @@ const BODIES = {
   run1: ['...ktttTtk..', '.kkstttTtsk.', '...ktttTtk..', '..kbbk.kbbk.', 'dd.kk...kk..'],
   run2: ['...ktttTtk..', '...kstTtsk..', '...ktttTtk..', '....kbbbk...', '....kk.kk...'],
   sit: ['...ktttTtk..', '..kstttTtsk.', '...ktttTtkbk', '...kkkkkkkkk'],
+  // At a desk, arms forward: the hands are on the keys, and drawn with them.
+  type: ['...ktttttk..', '..kttttTttk.', '...ktttTtk..', '...kbkkkbk..', '...kk...kk..'],
 } as const
 
 type Eyes = 'open' | 'shut' | 'out'
@@ -233,30 +236,56 @@ const fill = (color: string, d: string): string => (d === '' ? '' : `<path fill=
 const at = (x: number, y: number, body: string): string => `<g transform="translate(${x} ${y})">${body}</g>`
 
 /**
- * Frames shown in turn, each held the same time and switched outright: no tweening, as a sprite sheet would.
- * A frame given twice running is held for two beats and drawn once, and an empty one draws nothing.
+ * A turn of beats as an animation is told it: each beat once for as long as it holds, and when it starts. Nothing is
+ * tweened, as on a sprite sheet. With a lead, the turn starts that many seconds in.
  */
-const flipbook = (frames: readonly string[], seconds: number): string => {
-  const held: { frame: string; from: number }[] = []
+const turnOf = (told: readonly string[], seconds: number, lead: number): { held: string[]; timing: string } => {
+  const held: { beat: string; from: number }[] = []
 
-  frames.forEach((frame, i) => {
-    if (held.at(-1)?.frame !== frame) {
-      held.push({ frame, from: i })
+  told.forEach((beat, i) => {
+    if (held.at(-1)?.beat !== beat) {
+      held.push({ beat, from: i })
     }
   })
 
-  const keyTimes = held.length === frames.length ? '' : ` keyTimes="${held.map(one => Number((one.from / frames.length).toFixed(3))).join(';')}"`
+  const keyTimes = held.length === told.length ? '' : ` keyTimes="${held.map(one => Number((one.from / told.length).toFixed(3))).join(';')}"`
+  const begin = lead === 0 ? '' : ` begin="-${Number(lead.toFixed(2))}s"`
 
-  return held
-    .map(({ frame }, shown) => {
-      const values = held.map((_, i) => (i === shown ? 'visible' : 'hidden')).join(';')
+  return { held: held.map(one => one.beat), timing: `${keyTimes}${begin} dur="${seconds}s" calcMode="discrete" repeatCount="indefinite"` }
+}
 
-      return frame === ''
+/**
+ * Frames shown in turn, each held the same time. A frame given twice running is held for two beats, one that comes
+ * round again is drawn once however often it shows, and an empty one draws nothing.
+ */
+const flipbook = (frames: readonly string[], seconds: number, lead = 0): string => {
+  const { held, timing } = turnOf(frames, seconds, lead)
+
+  return [...new Set(held)]
+    .map(frame =>
+      frame === ''
         ? ''
-        : `<g visibility="${shown === 0 ? 'visible' : 'hidden'}"><animate attributeName="visibility" values="${values}"${keyTimes} dur="${seconds}s" calcMode="discrete" repeatCount="indefinite"/>${frame}</g>`
-    })
+        : `<g visibility="${held[0] === frame ? 'visible' : 'hidden'}"><animate attributeName="visibility" values="${held.map(one => (one === frame ? 'visible' : 'hidden')).join(';')}"${timing}/>${frame}</g>`,
+    )
     .join('')
 }
+
+/** What goes inside something to move it from place to place, a beat at each: `x y` from where it was drawn. */
+const hopping = (places: readonly string[], seconds: number, lead = 0): string => {
+  const { held, timing } = turnOf(places, seconds, lead)
+
+  return `<animateTransform attributeName="transform" type="translate" values="${held.join(';')}"${timing}/>`
+}
+
+// How long a walk to the copier or back takes.
+const WALK = 2
+
+/**
+ * What shows only once a walk is over, and what shows only until it is. It is taken out of the drawing whole rather than
+ * hidden: a flipbook's frames say for themselves whether they show, and would show through.
+ */
+const onceOver = (body: string): string => (body === '' ? '' : `<g display="none"><set attributeName="display" to="inline" begin="${WALK}s"/>${body}</g>`)
+const tillOver = (body: string): string => (body === '' ? '' : `<g><set attributeName="display" to="none" begin="${WALK}s"/>${body}</g>`)
 
 const drifting = (fromX: number, toX: number, y: number, seconds: number, clock: number, body: string): string => {
   const values = Array.from({ length: Math.ceil((toX - fromX + 1) / 2) }, (_, i) => `${fromX + i * 2} ${y}`).join(';')
@@ -647,10 +676,84 @@ const drawBubbles = (bubbles: readonly Bubble[], cast: Cast): { tails: string; d
 
 // ---------- The furniture ----------
 
+const hairOf = (actor: Actor): number => (actor.seat < 0 ? 0 : actor.seat % HAIRS.length)
+
 const clerkSprite = (actor: Actor, body: keyof typeof BODIES, eyes: Eyes, cast: Cast): string => {
-  const hair = HAIRS[actor.seat < 0 ? 0 : actor.seat % HAIRS.length] ?? 'b'
+  const hair = HAIRS[hairOf(actor)] ?? 'b'
 
   return cast.sprite(`clerk-${hair}-${body}-${eyes}`, person(CLERK, hair, body, eyes))
+}
+
+// ---------- At work ----------
+
+// What an agent at its desk does over and over, in beats: eight with its head down over the keys, then four looking up
+// at what it wrote, where it blinks. Its hands, its screen and the glint on its strip keep the same time, and stop when it does.
+const TURN = 2.4
+const KEY_BEATS = 8
+const LOOK_BEATS = 4
+
+/** It is at its desk and getting on, which is the one thing that types. */
+const isTyping = (actor: Actor): boolean => (actor.status === 'running' || actor.status === 'pending') && !actor.atCopier
+
+/** Which of three starts its turn has, so a row of them does not move as one. It goes by hair, which neighbours differ in. */
+const stepOf = (actor: Actor): number => hairOf(actor) % 3
+
+const leadOf = (step: number): number => (step * TURN) / 3
+
+const beats = <T>(count: number, beat: (i: number) => T): T[] => Array.from({ length: count }, (_, i) => beat(i))
+
+/** Eyelids, for a head whose sprite has its corner here. They come down on the second beat of looking up. */
+const lidsOf = (cast: Cast, step: number): string =>
+  cast.part(`lids-${step}`, 0, 0, () => flipbook([...beats(KEY_BEATS + 1, () => ''), fill(SKIN, rect(6, 7, 1, 1) + rect(8, 7, 1, 1)), ...beats(LOOK_BEATS - 2, () => '')], TURN, leadOf(step)))
+
+/**
+ * Someone typing, with the top left corner of their sprite here. Their head is one drawing for everyone with their hair
+ * and their start, so a floor of them costs little. Over a partition the head is all that shows, and all that is drawn.
+ */
+const typistOf = (actor: Actor, left: number, y: number, isHeadOnly: boolean, cast: Cast): string => {
+  const hair = HAIRS[hairOf(actor)] ?? 'b'
+  const step = stepOf(actor)
+  const head = cast.part(`typist-${hair}-${step}`, left, y, () => {
+    const face = cast.sprite(
+      `head-${hair}`,
+      CLERK.map(row => eyed(row.replaceAll('h', hair), 'open')),
+    )
+
+    return `<g>${hopping([...beats(KEY_BEATS, () => '0 1'), ...beats(LOOK_BEATS, () => '0 0')], TURN, leadOf(step))}${face}</g>${lidsOf(cast, step)}`
+  })
+
+  return isHeadOnly ? head : `<g color="${tunicOf(actor)}">${cast.part('typist-body', left, y + CLERK.length, () => paint(BODIES.type))}</g>${head}`
+}
+
+/** Its hands on the keys of the desk whose left foot is here: one up as the other comes down, then both at rest while it reads. */
+const handsOf = (actor: Actor, x: number, ground: number, cast: Cast): string => {
+  const step = stepOf(actor)
+
+  return cast.part(`hands-${step}`, x, ground, () =>
+    [6, 8]
+      .map((across, hand) => `<path fill="${SKIN}" d="${rect(across, -3, 1, 1)}">${hopping([...beats(KEY_BEATS, i => (i % 2 === hand ? '0 -1' : '0 0')), ...beats(LOOK_BEATS, () => '0 0')], TURN, leadOf(step))}</path>`)
+      .join(''),
+  )
+}
+
+/**
+ * A glint crossing the lit part of its strip, this many pixels of it: a strip that moves is one whose agent is at it.
+ * It is two pixels where they have somewhere to go, one where they do not, and with a single pixel lit it comes and goes.
+ */
+const glintOf = (actor: Actor, x: number, y: number, across: number, cast: Cast): string => {
+  const step = stepOf(actor)
+
+  return cast.part(`glint-${across}-${step}`, x, y, () => {
+    const wide = Math.max(1, Math.min(2, across - 1))
+
+    return across === 1
+      ? flipbook(['', '', '', fill('#E4F6FB', rect(0, 0, 1, 3))], TURN, leadOf(step))
+      : `<path fill="#E4F6FB" d="${rect(0, 0, wide, 3)}">${hopping(
+          beats(across - wide + 1, i => `${i} 0`),
+          TURN,
+          leadOf(step),
+        )}</path>`
+  })
 }
 
 const LIGHTS: Partial<Record<BoardStatus, string>> = {
@@ -669,7 +772,7 @@ const tickOf = (x: number, y: number, cast: Cast): string =>
 
 /**
  * The strip on a partition, which says how its agent stands: filled as far as the agent says it has got, lit whole
- * where it has not said, a tick once it is done.
+ * where it has not said, a tick once it is done. While its agent types a glint crosses what is lit.
  */
 const gaugeOf = (actor: Actor, x: number, y: number, width: number, cast: Cast): string => {
   const whole = rect(x, y, width, 3)
@@ -685,15 +788,15 @@ const gaugeOf = (actor: Actor, x: number, y: number, width: number, cast: Cast):
   }
 
   const color = LIGHTS[actor.status] ?? DARK
-  const isBusy = actor.status === 'running' || actor.status === 'pending'
+  const across = actor.percent === null ? width : Math.max(1, Math.round((width * actor.percent) / 100))
+  const lit = rect(x, y, across, 3)
 
-  if (actor.percent === null) {
-    return isBusy ? flipbook([fill(color, whole), fill('#C9EEF8', whole)], 0.9) : fill(color, whole)
-  }
-
-  const lit = rect(x, y, Math.max(1, Math.round((width * actor.percent) / 100)), 3)
-
-  return fill(DARK, whole) + (actor.status === 'waiting' ? flipbook([fill(color, lit), fill('#B8A800', lit)], 0.8) : fill(color, lit))
+  return (
+    (actor.percent === null ? '' : fill(DARK, whole)) +
+    (actor.status === 'waiting' && actor.percent !== null ? flipbook([fill(color, lit), fill('#B8A800', lit)], 0.8) : fill(color, lit)) +
+    // Back from the copier, it starts when its agent has sat down.
+    (isTyping(actor) ? (actor.wasAtCopier ? onceOver(glintOf(actor, x, y, across, cast)) : glintOf(actor, x, y, across, cast)) : '')
+  )
 }
 
 /**
@@ -717,31 +820,30 @@ const cubeOf = (x: number, rim: number, floor: number, width: number, actor: Act
     : cast.part(`cube-${width}-${down}`, x, rim, panel) + band(x, rim) + gaugeOf(actor, x + 1, rim + 5, width - 3, cast)
 }
 
-/** Someone who is in, with the top left corner of their sprite here: blinking at work, asleep when idle, a hand up when they need him. */
-const personOf = (actor: Actor, left: number, y: number, cast: Cast): string => {
+/** Someone who is in, with the top left corner of their sprite here: typing at work, asleep when idle, a hand up when they need him. */
+const personOf = (actor: Actor, left: number, y: number, isHeadOnly: boolean, cast: Cast): string => {
   if (actor.status === 'failed') {
     return `<g color="#847E87">${at(left, y, clerkSprite(actor, 'stand', 'out', cast))}</g>`
   }
 
+  if (actor.status !== 'idle' && actor.status !== 'waiting') {
+    return typistOf(actor, left, y, isHeadOnly, cast)
+  }
+
   const color = tunicOf(actor)
-  const open = clerkSprite(actor, 'stand', 'open', cast)
   const shut = clerkSprite(actor, 'stand', 'shut', cast)
 
   if (actor.status === 'idle') {
     return `<g color="${color}">${at(left, y, shut + at(11, 1, snoring()))}</g>`
   }
 
-  const blinking = `<g color="${color}">${at(left, y, flipbook([open, open, open, shut], 2.4))}</g>`
-
-  if (actor.status !== 'waiting') {
-    return blinking
-  }
+  const open = clerkSprite(actor, 'stand', 'open', cast)
 
   // An arm up beside its head, and a mark that blinks: it is the one state that is waiting on him.
-  const arm = fill(INK, rect(left + 10, y + 1, 3, 10) + rect(left + 10, y - 1, 4, 3)) + fill('#EEC39A', rect(left + 11, y + 2, 1, 9) + rect(left + 11, y, 2, 1))
+  const arm = fill(INK, rect(left + 10, y + 1, 3, 10) + rect(left + 10, y - 1, 4, 3)) + fill(SKIN, rect(left + 11, y + 2, 1, 9) + rect(left + 11, y, 2, 1))
   const mark = fill(INK, rect(left - 1, y - 3, 3, 7)) + fill('#FBF236', rect(left, y - 2, 1, 3) + rect(left, y + 2, 1, 1))
 
-  return arm + blinking + flipbook([mark, mark, ''], 0.8)
+  return `${arm}<g color="${color}">${at(left, y, flipbook([open, open, open, shut], 2.4))}</g>${flipbook([mark, mark, ''], 0.8)}`
 }
 
 /** Who shows above the partition. Nobody, once they have gone home or are at the copier. */
@@ -750,10 +852,10 @@ const headOf = (actor: Actor, x: number, rim: number, width: number, cast: Cast)
     return ''
   }
 
-  const person = personOf(actor, x - 1 + Math.floor((width - SPRITE_WIDTH - 1) / 2), rim - 11, cast)
+  const person = personOf(actor, x - 1 + Math.floor((width - SPRITE_WIDTH - 1) / 2), rim - 11, true, cast)
 
   // Back from the copier: it shows when it has walked over.
-  return isWorking(actor) && actor.wasAtCopier ? `<g visibility="hidden"><set attributeName="visibility" to="visible" begin="2s"/>${person}</g>` : person
+  return isWorking(actor) && actor.wasAtCopier ? onceOver(person) : person
 }
 
 /** Where the rain falls over a partition: the cloud, and under it the drops. */
@@ -767,10 +869,17 @@ const cloudOver = (x: number, rim: number, width: number): Rect => {
 const failureOf = (x: number, rim: number, width: number, cast: Cast): string =>
   cast.part('rain', cloudOver(x, rim, width).left, rim - 20, raining) + fill(RED, rect(x + width - 8, rim - 3, 6, 2)) + fill(INK, rect(x + width - 8, rim - 1, 6, 1))
 
-const copierOf = (floor: number): string =>
+/** The copier, and with someone at it the light going to and fro under its lid. */
+const copierOf = (floor: number, isInUse: boolean): string =>
   fill(INK, rect(5, floor - 18, 20, 19)) +
   fill('#CBC7B5', rect(6, floor - 17, 18, 17)) +
   fill('#847E87', rect(6, floor - 17, 18, 3)) +
+  (isInUse
+    ? `<path fill="#FFFFFF" d="${rect(0, 0, 3, 1)}" transform="translate(7 ${floor - 16})">${hopping(
+        [7, 10, 13, 16, 19, 16, 13, 10].map(x => `${x} ${floor - 16}`),
+        1.6,
+      )}</path>`
+    : '') +
   fill('#FFFFFF', rect(9, floor - 20, 10, 3)) +
   flipbook([fill('#99E550', rect(20, floor - 12, 2, 2)), fill('#37946E', rect(20, floor - 12, 2, 2))], 0.8)
 
@@ -781,10 +890,12 @@ const walkOf = (fromX: number, toX: number, y: number): string => {
   const hops = Math.ceil(count / 3)
   const values = Array.from({ length: hops + 1 }, (_, i) => `${fromX + Math.min(count, i * 3) * direction} ${y}`).join(';')
 
-  return `<animateTransform attributeName="transform" type="translate" values="${values}" dur="2s" calcMode="discrete" fill="freeze"/>`
+  return `<animateTransform attributeName="transform" type="translate" values="${values}" dur="${WALK}s" calcMode="discrete" fill="freeze"/>`
 }
 
 const spotInQueue = (i: number, total: number): number => QUEUE_START + i * Math.max(4, Math.min(QUEUE_STEP, Math.floor(72 / Math.max(1, total))))
+
+const runningOf = (actor: Actor, cast: Cast): string => flipbook([clerkSprite(actor, 'run1', 'open', cast), at(0, -1, clerkSprite(actor, 'run2', 'open', cast))], 0.36)
 
 /** Anyone running a command stands in line at the copier. */
 const queueOf = (queue: readonly { actor: Actor; home: number }[], bottom: number, cast: Cast): string =>
@@ -792,24 +903,22 @@ const queueOf = (queue: readonly { actor: Actor; home: number }[], bottom: numbe
     .map(({ actor, home }, i) => {
       const x = spotInQueue(i, queue.length)
       const y = bottom - SPRITE_HEIGHT - 1
-      const run = flipbook([clerkSprite(actor, 'run1', 'open', cast), at(0, -1, clerkSprite(actor, 'run2', 'open', cast))], 0.36)
       const stand = flipbook([clerkSprite(actor, 'stand', 'open', cast), clerkSprite(actor, 'stand', 'open', cast), clerkSprite(actor, 'stand', 'shut', cast)], 2.4)
       const isArriving = !actor.wasAtCopier
-      const walking = isArriving ? `<g><set attributeName="visibility" to="hidden" begin="2s"/>${run}</g>` : ''
-      const waiting = `<g visibility="${isArriving ? 'hidden' : 'visible'}">${isArriving ? '<set attributeName="visibility" to="visible" begin="2s"/>' : ''}${stand}</g>`
+      // On its way over it runs, and stands once it is there.
+      const body = isArriving ? walkOf(home, x, y) + tillOver(runningOf(actor, cast)) + onceOver(stand) : stand
 
       cast.pin(actor, x + SPRITE_WIDTH / 2, y + 2)
 
-      return hot(actor, `<g color="${tunicOf(actor)}" transform="translate(${isArriving ? home : x} ${y})">${isArriving ? walkOf(home, x, y) : ''}${walking}${waiting}</g>`, cast)
+      return hot(actor, `<g color="${tunicOf(actor)}" transform="translate(${isArriving ? home : x} ${y})">${body}</g>`, cast)
     })
     .join('')
 
 /** Back at the desk from the copier: the walk there, then the head takes over. */
 const returningOf = (actor: Actor, home: number, bottom: number, cast: Cast): string => {
   const y = bottom - SPRITE_HEIGHT - 1
-  const run = flipbook([clerkSprite(actor, 'run1', 'open', cast), at(0, -1, clerkSprite(actor, 'run2', 'open', cast))], 0.36)
 
-  return `<g color="${tunicOf(actor)}" transform="translate(${QUEUE_START} ${y})">${walkOf(QUEUE_START, home, y)}<g><set attributeName="visibility" to="hidden" begin="2s"/>${run}</g></g>`
+  return `<g color="${tunicOf(actor)}" transform="translate(${QUEUE_START} ${y})">${walkOf(QUEUE_START, home, y)}${tillOver(runningOf(actor, cast))}</g>`
 }
 
 /** A finished report on its way to the pile, which is fan-in you can watch. */
@@ -868,7 +977,17 @@ const bossRoomOf = (office: Office, x: number, top: number, floor: number, right
     fill(SKY, rect(x + 4, top + 3, width - 8, Math.max(6, floor - top - 26))) +
     at(0, 0, drifting(x - 8, right - 16, top + 5, 120, clock, `<g opacity=".9">${paint(CLOUD)}</g>`)) +
     fill('#847E87', rect(x, top, 2, floor - top)) +
-    (boss === null ? '' : hot(boss, `<g color="#5B6EE1">${at(x + 8, floor - 23, cast.sprite('boss-stand', person(BOSS, 'b', 'stand', 'open')))}</g>`, cast)) +
+    (boss === null
+      ? ''
+      : hot(
+          boss,
+          `<g color="#5B6EE1">${at(
+            x + 8,
+            floor - 23,
+            cast.sprite('boss-stand', person(BOSS, 'b', 'stand', 'open')) + flipbook([...beats(15, () => ''), fill(SKIN, rect(6, 7, 1, 1) + rect(8, 7, 1, 1))], 3.2),
+          )}</g>`,
+          cast,
+        )) +
     // A desk with a front to it, so the boss shows from the chest up with its hands on the top.
     fill('#8F563B', rect(x + 5, floor - 10, width - 8, 2)) +
     fill('#663931', rect(front.left, floor - 8, front.right - front.left, 8)) +
@@ -1170,7 +1289,7 @@ const bandOf = (office: Office, width: number, height: number, clock: number, ca
     cubes,
     carpetOf(width, floor, CARPET),
     bossRoomOf(office, bossX, ceilingEnd, floor, width - 1, done, clock, cast),
-    copierOf(floor),
+    copierOf(floor, queue.length > 0),
     failures,
     isJammed ? plateOf(jam.left, jam.top, 'PC LOAD LETTER', '#99E550', cast) : '',
     directory === null
@@ -1230,13 +1349,30 @@ const screenOf = (actor: Actor, x: number, y: number, cast: Cast): string => {
     return screen('idle', () => lit('#323C39') + fill('#DF7126', rect(7, 4, 1, 1)))
   }
 
-  // At work: lines of something scrolling by, and under them how far it says it has got.
+  // At work: a line that grows as its agent types and starts again each time it goes back to the keys, or stands as it
+  // was left while its agent is at the copier. Under it, how far it says it has got.
+  const step = isTyping(actor) ? `${stepOf(actor)}` : 'left'
+  const line = (row: number): string => {
+    if (!isTyping(actor)) {
+      return fill('#CBDBFC', rect(1, row, 4, 1))
+    }
+
+    // Two more pixels every other beat, and whole by the time its agent looks up.
+    const { held, timing } = turnOf(
+      [2, 4, 6, 7].flatMap(across => beats(across === 7 ? LOOK_BEATS + 2 : 2, () => `${across}`)),
+      TURN,
+      leadOf(stepOf(actor)),
+    )
+
+    return `<rect x="1" y="${row}" width="7" height="1" fill="#CBDBFC"><animate attributeName="width" values="${held.join(';')}"${timing}/></rect>`
+  }
+
   if (actor.percent === null) {
-    return screen('busy', () => lit('#3F3F74') + flipbook([fill('#CBDBFC', rect(1, 1, 4, 1) + rect(1, 3, 6, 1)), fill('#CBDBFC', rect(1, 1, 6, 1) + rect(1, 3, 3, 1))], 0.6))
+    return screen(`busy-${step}`, () => lit('#3F3F74') + fill('#CBDBFC', rect(1, 1, 5, 1)) + line(3))
   }
 
   return (
-    screen('counting', () => lit('#3F3F74') + flipbook([fill('#CBDBFC', rect(1, 1, 4, 1)), fill('#CBDBFC', rect(1, 1, 6, 1))], 0.6) + fill(INK, rect(0, 3, 9, 3))) +
+    screen(`counting-${step}`, () => lit('#3F3F74') + line(1) + fill(INK, rect(0, 3, 9, 3))) +
     fill('#9BDCF0', rect(x, y + 4, Math.max(1, Math.round((9 * actor.percent) / 100)), 2))
   )
 }
@@ -1258,7 +1394,12 @@ const stationOf = (actor: Actor, x: number, ground: number, cast: Cast): string 
       'desk',
       left,
       floor,
-      () => fill('#D9A066', rect(0, -3, STATION - 1, 1)) + fill('#8F563B', rect(0, -2, 1, 2) + rect(STATION - 2, -2, 1, 2)) + fill(INK, rect(14, -12, 11, 8) + rect(18, -4, 3, 1)),
+      () =>
+        fill('#D9A066', rect(0, -3, STATION - 1, 1)) +
+        fill('#8F563B', rect(0, -2, 1, 2) + rect(STATION - 2, -2, 1, 2)) +
+        fill(INK, rect(14, -12, 11, 8) + rect(18, -4, 3, 1)) +
+        // The keys, at the front of the desk where its agent sits.
+        fill('#595652', rect(4, -3, 7, 1)),
     )
 
   cast.pin(actor, x + 7, isIn ? ground - 14 : ground - 12)
@@ -1271,8 +1412,9 @@ const stationOf = (actor: Actor, x: number, ground: number, cast: Cast): string 
   return hot(
     actor,
     chair(x, ground) +
-      (isIn ? personOf(actor, x + 1, ground - SPRITE_HEIGHT, cast) : '') +
+      (isIn ? personOf(actor, x + 1, ground - SPRITE_HEIGHT, false, cast) : '') +
       desk(x, ground) +
+      (isTyping(actor) ? handsOf(actor, x, ground, cast) : '') +
       screenOf(actor, x + 15, ground - 11, cast) +
       // Rain indoors, on the screen that says why, and the red stapler on top of it.
       (isFailed ? cast.part('rain', x + 14, ground - 23, raining) + fill(RED, rect(x + 17, ground - 14, 6, 1)) + fill(INK, rect(x + 17, ground - 13, 6, 1)) : ''),
@@ -1562,7 +1704,7 @@ const liveFloorOf = (plan: Plan, y: number, width: number, pile: { x: number; y:
       body +
       // Something green where a desk would be, if the front row has the room.
       (inFront < perRow ? at(first + inFront * STATION + 9, ground - 9, cast.sprite('plant', PLANT)) : '') +
-      copierOf(ground) +
+      copierOf(ground, inLine.length > 0) +
       queueOf(inLine.map(actor => ({ actor: { ...actor, wasAtCopier: true }, home: seatOf(actor).x })), bottom, cast) +
       tails +
       said,

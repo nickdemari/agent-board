@@ -6,14 +6,14 @@ A Claude Code mod that turns a session's agents into a small pixel-art office. I
 
 ## What it does
 
-- **Who is working:** a working agent's head shows above its cubicle, and its bubble says what it's on. The strip on its partition fills as it reports its steps.
-- **What kind of work:** an agent running a command walks to the copier and waits in line.
+- **Who is working:** a working agent's head shows above its cubicle, and its bubble says what it's on. The head dips while the agent types and comes up when it reads. The strip on its partition fills as it reports its steps, and a glint crosses it while the agent is typing.
+- **What kind of work:** an agent running a command walks to the copier and waits in line, and the copier scans while anyone is at it.
 - **Waiting on you:** an agent that needs an answer puts its hand up, with a blinking mark beside it.
 - **Finishing:** its report flies to the pile on the boss's desk, and a tick stays on its cubicle. The main agent is the boss, and it keeps its crown.
 - **Failures:** a failed agent stays at its desk under an indoor rain cloud, with a red stapler. Failures stay on the board until your next prompt.
 - **Workflows:** the directory on the wall lists the stages from the script, with how many of each are done. A count can grow as the script decides what to do next.
 - **Any size:** the row only holds who's busy, and everyone else spreads out in tiny cubicles behind, so 600 agents look like a big office rather than a crowd.
-- **Fill screen:** the button above the scene, or `/agent-board`, opens the whole building in a pane: a floor for each stage, the boss upstairs, and a desk for every agent with a screen that shows how it stands. The fewer the agents, the closer in the view. Mods can't cover the whole window, so a pane is as large as it gets.
+- **Fill screen:** the button above the scene, or `/agent-board`, opens the whole building in a pane: a floor for each stage, the boss upstairs, and a desk for every agent with a screen that shows how it stands. A working agent's hands are on its keys, and a line on its screen grows as it types. The fewer the agents, the closer in the view. Mods can't cover the whole window, so a pane is as large as it gets.
 - **Hover:** hover an agent or its bubble for its full task, its percent and the time left.
 
 With no agents running, the band shrinks to a mug of coffee and one line. In a terminal session you get plain text rows instead of the scene.
