@@ -12,6 +12,7 @@ const BAND = {
   component: 'AbovePrompt',
   props: {
     hasSurvey: false,
+    isCollapsed: false,
     isWorking: false,
     maxRows: 12,
     bodyColumns: 100,
@@ -585,7 +586,7 @@ test('a workflow run is on the board as one squad, though the list never names i
   expect(await says(ui, 'No agents running')).toBe(false)
   expect(await says(ui, 'review changes: 0/2 done')).toBe(true)
   // Too many to read out one by one, but each one's cubicle says when hovered.
-  expect((await frameIn(ui)).source).toContain('<title>Step 1')
+  expect((await frameIn(ui)).source).toMatch(/<(desc|title)>Step 1/)
   expect(JSON.stringify(await ui.findAll({ type: 'Text' }))).not.toContain('Step 1')
   expect(prompts).toEqual(['Review it.', 'Review it.'])
   await ui.unmount()
@@ -691,12 +692,12 @@ test('past twelve the rest are counted, and nobody is left out of the scene', as
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await says(ui, 'more agents')).toBe(false)
-  expect((await frameIn(ui)).source).toContain('<title>Task 11')
+  expect((await frameIn(ui)).source).toMatch(/<(desc|title)>Task 11/)
 
   roster.push(...Array.from({ length: 8 }, (_, n) => agent(`b${n}`, `Other ${n}`, 'running')))
   await clock.advance(POLL)
   expect(await says(ui, 'and 8 more agents')).toBe(true)
-  expect((await frameIn(ui)).source).toContain('<title>Other 7')
+  expect((await frameIn(ui)).source).toMatch(/<(desc|title)>Other 7/)
   await ui.unmount()
 })
 
@@ -743,8 +744,12 @@ test('however big the run, both views stay under what a surface will take', asyn
   await clock.advance(POLL)
 
   const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 200 } })
-  expect((await frameIn(band)).source.length).toBeLessThan(120_000)
+  const crowded = (await frameIn(band)).source
+  expect(crowded.length).toBeLessThan(120_000)
   expect((await frameIn(band)).height).toBeLessThanOrEqual(215)
+  // Too many for each to have a card to hover: most say it in the surface's own tooltip, and the cards left are the failures'.
+  expect(crowded).toContain('<title>')
+  expect(crowded).toMatch(/<g id="c\d+" visibility="hidden"/)
   await band.unmount()
 
   await clock.advance(ACTIVITY)
@@ -761,11 +766,12 @@ test('a bubble shows its whole thought, and a thought too long to be small is re
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   // One drawn glyph per letter, so what a thought adds over a short one is every letter it has.
+  // The card that hovering shows says it again, and is left out of the count.
   const lettersFor = async (done: number, doing: string) => {
     await reported($, 'a1', done, 4, doing)
     await clock.advance(ACTIVITY)
 
-    return (await frameIn(ui)).source.match(/<use href="#g\d+" x=/g)?.length ?? 0
+    return (await frameIn(ui)).source.replace(/<g id="cards">.*$/, '').match(/<use href="#g\d+" x=/g)?.length ?? 0
   }
   const least = await lettersFor(0, 'Go')
 
@@ -1051,7 +1057,7 @@ test('a run agent touching a file reaches the scene with the rest of its news, a
   expect(drawings).toBe(before)
 
   await clock.advance(ACTIVITY)
-  expect((await frameIn(ui)).source).toContain('<title>Step 1: login.ts')
+  expect((await frameIn(ui)).source).toMatch(/<(desc|title)>Step 1: login\.ts/)
   await ui.unmount()
 })
 
@@ -1087,4 +1093,233 @@ test('his next prompt lets go of the steps and runs of what it clears', async ($
   // The main agent's step stays: its next turn starts it over.
   expect(Object.keys(stored.steps ?? {}).sort()).toEqual(['a2', 'main'])
   expect(Object.keys(stored.runs ?? {})).toEqual([])
+})
+
+test('hovering an agent shows a card with its whole task, what it is on and how far along', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Trace the token refresh', 'running'))
+  await clock.advance(POLL)
+  await reported($, 'a1', 1, 4, 'Reading login.ts')
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const { source } = await frameIn(ui)
+
+  // Hidden until its agent is hovered, and drawn last, over everything else.
+  expect(source).toContain('svg:has(.h0:hover) #c0{visibility:visible}')
+  expect(source).toMatch(/<g id="cards"><g id="c0" visibility="hidden"/)
+  // The words are in the drawing once, for anyone who cannot see the card.
+  expect(source.match(/<desc>Trace the token refresh: Reading login\.ts<\/desc>/g)).toHaveLength(1)
+  // The card says it, so the surface's own tooltip does not say it again.
+  expect(source).not.toContain('<title>')
+  await ui.unmount()
+})
+
+test('an agent waiting on him is marked in yellow, and one that finishes leaves a tick at its desk', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  const one = agent('a1', 'Draft the migration', 'running')
+  roster.push(one)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  // Nothing in the scene is yellow until someone needs him: not this agent's shirt, hair or strip.
+  expect((await frameIn(ui)).source).not.toContain('#FBF236')
+  expect((await frameIn(ui)).source).not.toContain('id="tick"')
+
+  one.status = 'waiting'
+  await clock.advance(POLL)
+  expect((await frameIn(ui)).source).toContain('#FBF236')
+
+  one.status = 'completed'
+  await clock.advance(POLL)
+  expect((await frameIn(ui)).source).toContain('<use href="#tick"')
+  await ui.unmount()
+})
+
+test('how far along an agent says it is fills the strip at its desk', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Trace the token refresh', 'running'))
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  // The strip is three pixels deep and as wide as the partition allows: eleven, at the widest.
+  const litOf = async () => (await frameIn(ui)).source.match(/<path fill="#9BDCF0" d="M\d+ \d+h(\d+)v3h-\d+z"\/>/)?.[1]
+
+  // Until it says, the strip is lit whole.
+  expect(await litOf()).toBe('11')
+
+  await reported($, 'a1', 1, 4)
+  await clock.advance(ACTIVITY)
+  expect(await litOf()).toBe('3')
+
+  await reported($, 'a1', 3, 4)
+  await clock.advance(ACTIVITY)
+  expect(await litOf()).toBe('8')
+  await ui.unmount()
+})
+
+test('fill screen has a desk for each agent and none to spare, and draws a few of them larger than a crowd', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(agent('a1', 'Task one', 'running'), agent('a2', 'Task two', 'completed'))
+  await clock.advance(POLL)
+
+  const pane = await $.ui.mount({
+    plugin: 'agent-board',
+    component: 'Pane',
+    requestId: 'agent-board',
+    surface: 'desktop',
+    props: { title: 'Agent Board', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 50 }, view: {} },
+  })
+  const desksIn = (source: string): number => source.match(/<use href="#desk"/g)?.length ?? 0
+  // How many of the art's pixels the scene is across: the fewer, the larger each is drawn.
+  const acrossOf = (source: string): number => Number(/viewBox="0 0 (\d+) /.exec(source)?.[1])
+  const few = (await frameIn(pane)).source
+
+  expect(desksIn(few)).toBe(2)
+
+  roster.push(...Array.from({ length: 28 }, (_, n) => agent(`b${n}`, `Other ${n}`, 'running')))
+  await clock.advance(POLL)
+  const many = (await frameIn(pane)).source
+
+  expect(desksIn(many)).toBe(30)
+  expect(acrossOf(many)).toBeGreaterThan(acrossOf(few))
+  await pane.unmount()
+})
+
+const PANE = (bodyColumns: number, bodyRows: number) =>
+  ({
+    plugin: 'agent-board',
+    component: 'Pane',
+    requestId: 'agent-board',
+    surface: 'desktop',
+    props: { title: 'Agent Board', isFocused: false, bodyColumns, placement: 'dock', scroll: { offset: 0, bodyRows }, view: {} },
+  }) as const
+
+test('a crowd with a lot to say still fits what a surface will take: cards go, then desks, and everyone is still drawn', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(...Array.from({ length: 120 }, (_, n) => agent(`a${n}`, `Trace how the session token is refreshed across every route ${n}`, 'running')))
+  await clock.advance(POLL)
+  await Promise.all(roster.map((one, n) => reported($, one.id, n % 9, 12, 'Reading the photo upload markup closely')))
+  await clock.advance(ACTIVITY)
+
+  const pane = await $.ui.mount(PANE(100, 50))
+  const tall = (await frameIn(pane)).source
+
+  expect(tall.length).toBeLessThan(120_000)
+  // Fewer than everyone has a desk, and the rest are the tiny cubicles: one mark each.
+  const desks = tall.match(/<use href="#desk"/g)?.length ?? 0
+  const tiny = /<path fill="#8A8FA3" d="([^"]*)"/.exec(tall)?.[1]?.match(/M/g)?.length ?? 0
+
+  expect(desks).toBeGreaterThan(8)
+  expect(desks).toBeLessThan(120)
+  expect(desks + tiny).toBe(120)
+  await pane.unmount()
+
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 200 } })
+  expect((await frameIn(band)).source.length).toBeLessThan(120_000)
+  await band.unmount()
+})
+
+test('a run of many stages in a short pane keeps the stage under way in view', async ($, on) => {
+  const { clock } = world(on)
+  spawning(on)
+  await begin($)
+  const stages = Array.from({ length: 9 }, (_, n) => `s${n}`)
+  const script = `wf_tall export const meta = { phases: [${stages.map(title => `{ title: '${title}' }`).join(', ')}] }`
+  await launched($, script)
+
+  // Eight stages over, two failures in each, and a ninth under way.
+  for (const [stage, title] of stages.entries()) {
+    for (let n = 0; n < 6; n += 1) {
+      const index = stage * 10 + n
+
+      await startedIn($, script, index, `${title}:${n}`)
+
+      if (stage < 8) {
+        await ended($, `${script}-${index}`, n < 2 ? 'error' : 'answer')
+      }
+    }
+  }
+
+  await clock.advance(POLL)
+
+  const pane = await $.ui.mount(PANE(100, 40))
+  const { source, height } = await frameIn(pane)
+  const artHeight = Number(/viewBox="0 0 \d+ (\d+)"/.exec(source)?.[1])
+  const desks = [...source.matchAll(/<use href="#desk" x="\d+" y="(\d+)"/g)].map(found => Number(found[1]))
+
+  expect(desks).toHaveLength(6)
+  expect(Math.max(...desks)).toBeLessThan(artHeight)
+  expect(height).toBeLessThanOrEqual(40 * 16.8)
+  await pane.unmount()
+})
+
+test('a pane too short for a close view is drawn no taller than the pane', async ($, on) => {
+  world(on)
+  await begin($)
+  await $.turn.start({ text: 'fix it', turnId: 't1' })
+
+  for (const rows of [20, 30, 57]) {
+    const pane = await $.ui.mount(PANE(100, rows))
+
+    expect((await frameIn(pane)).height).toBeLessThanOrEqual(rows * 16.8)
+    await pane.unmount()
+  }
+})
+
+test('an agent waiting on him is at its desk with its hand up, though the last thing it ran was a command', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  const one = agent('a1', 'Run the suite', 'running')
+  roster.push(one)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  one.status = 'waiting'
+  await clock.advance(POLL)
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'u1', command: 'npm test', description: 'Running the tests', agentId: 'a1' })
+  await clock.advance(ACTIVITY)
+
+  const { source } = await frameIn(ui)
+
+  // Nobody walks to the copier, and the yellow mark is over its desk.
+  expect(source).not.toContain('fill="freeze"')
+  expect(source).toContain('#FBF236')
+  await ui.unmount()
+})
+
+test('a longer thought does not change how close fill screen is drawn', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push(...Array.from({ length: 16 }, (_, n) => agent(`a${n}`, `Task ${n}`, 'running')))
+  await clock.advance(POLL)
+  await Promise.all(roster.map(one => reported($, one.id, 1, 4, 'Reading a.ts')))
+  await clock.advance(ACTIVITY)
+
+  const pane = await $.ui.mount(PANE(120, 60))
+  const acrossOf = async (): Promise<string | undefined> => /viewBox="0 0 (\d+) /.exec((await frameIn(pane)).source)?.[1]
+  const before = await acrossOf()
+
+  await Promise.all(roster.map(one => reported($, one.id, 2, 4, 'Reading the photo upload markup closely')))
+  await clock.advance(ACTIVITY)
+  expect(await acrossOf()).toBe(before)
+  await pane.unmount()
+})
+
+test('an agent with nothing to its name is drawn without a card, and the drawing stays sound', async ($, on) => {
+  const { clock, roster } = world(on)
+  await begin($)
+  roster.push({ id: 'a1', description: '', type: '', status: 'running' } as AgentInfo)
+  await clock.advance(POLL)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const { source } = await frameIn(ui)
+
+  expect(source).not.toMatch(/Infinity|NaN/)
+  await ui.unmount()
 })

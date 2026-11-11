@@ -1,7 +1,7 @@
 {
   "name": "agent-board",
-  "version": "0.6.1",
-  "description": "A pixel-art office above the prompt where this session's agents sit at their cubicles, each with a thought bubble saying what it is doing, its percent done and time left.",
+  "version": "0.7.0",
+  "description": "A pixel-art office above the prompt where this session's agents sit at their cubicles, each with a thought bubble saying what it is doing and a strip on its desk that fills as it gets on.",
   "types": "./types/index.d.ts",
   "author": {
     "name": "Nick Demari"

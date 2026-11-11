@@ -1,5 +1,7 @@
 import type { BoardStatus } from '../types'
 
+import { CAP, GLYPHS, LINE, acrossOf, plain, widthOf } from './font'
+
 /** One agent as the scene draws it. The scene reads nothing else, so its source only changes when one of these does. */
 export type Actor = {
   id: string
@@ -58,13 +60,13 @@ const MOST_PIXELS = 4096
 // Past this the band scrolls, and hides the carpet or the button.
 const BAND_PIXELS = 215
 const BAND_SCALES = [3, 2] as const
-const TOWER_SCALES = [4, 3, 2] as const
-// How wide the art has to be to hold a thought and its words on one line of the whiteboard.
-const TOWER_WIDEST_LINE = 200
+// Few agents are drawn large. The more there are, the further out the building is seen from.
+const TOWER_SCALES = [5, 4, 3, 2] as const
 const NARROWEST = 110
+// A pixel of the words in CSS pixels, whatever scale the art is at: the art can shrink to fit a crowd, and the words still read.
+const TEXT_PIXEL = 2
 const SPRITE_WIDTH = 12
 const SPRITE_HEIGHT = 16
-const HUD_HEIGHT = 9
 // The partition and carpet under the heads, in the band.
 const RIM_TO_BOTTOM = 26
 const CARPET = 9
@@ -72,15 +74,23 @@ const COPIER_ROOM = 26
 const WIDEST_CUBE = 14
 const NARROWEST_CUBE = 8
 const QUEUE_STEP = 9
-// A bubble of three lines and the gap above it.
-const BUBBLE_ROW = 23
+// Where the line at the copier starts: in front of the machine, clear of the desks.
+const QUEUE_START = 7
 const BUBBLE_GAP = 2
-// How much of a bubble's line can start before its agent, and how wide lines start. A longer thought widens them.
-const LINE_CHARS = 16
-const PADDING_X = 5
-const LINE_HEIGHT = 6
+// How far to one side of its agent a bubble can sit, with its puffs leaning over to it: a little, and in a crowd a lot.
+const BUBBLE_LEAN = 8
+const FAR_LEAN = 40
+// How wide a line of a bubble gets, in the font's pixels, before the thought goes onto a second line.
+const LINE_PIXELS = 112
+// And in a crowd, where a narrow bubble of three lines fits and a wide one of one does not.
+const TERSE_PIXELS = 64
+// And of the card that hovering an agent shows.
+const CARD_PIXELS = 150
 const MOST_FLIGHTS = 4
-const WALK_SECONDS_PER_PIXEL = 0.03
+// A surface takes 131,072 characters of drawing. Past this many the hover cards give way, the least pressing first.
+const SOURCE_ROOM = 110_000
+// However big the crowd, this many keep a desk of their own.
+const FEWEST_SEATS = 8
 
 const INK = '#222034'
 const WALL = '#C9C2A8'
@@ -118,6 +128,8 @@ const COLORS: Readonly<Record<string, string>> = {
   n: '#847E87',
   N: '#595652',
   d: '#FFFFFF',
+  p: '#37946E',
+  P: '#6ABE30',
 }
 
 /** The grid as one path per color: runs across each row, so the source stays small. */
@@ -212,63 +224,7 @@ const person = (head: Grid, hair: string, body: keyof typeof BODIES, eyes: Eyes)
 const CLOUD: Grid = ['....wwww.....', '..wwwwwwww...', '.wwwwwwwwwww.', 'wwwwwwwwwwwww', 'WWWWWWWWWWWWW']
 const STORM: Grid = ['...NNNN....', '.NNNNNNNNN.', 'NNNNNNNNNNN', 'nnnnnnnnnnn']
 
-// Three by five, all caps. Anything else the agents say reads as a space.
-const GLYPHS: Readonly<Record<string, Grid>> = {
-  A: ['.k.', 'k.k', 'kkk', 'k.k', 'k.k'],
-  B: ['kk.', 'k.k', 'kk.', 'k.k', 'kk.'],
-  C: ['.kk', 'k..', 'k..', 'k..', '.kk'],
-  D: ['kk.', 'k.k', 'k.k', 'k.k', 'kk.'],
-  E: ['kkk', 'k..', 'kk.', 'k..', 'kkk'],
-  F: ['kkk', 'k..', 'kk.', 'k..', 'k..'],
-  G: ['.kk', 'k..', 'k.k', 'k.k', '.kk'],
-  H: ['k.k', 'k.k', 'kkk', 'k.k', 'k.k'],
-  I: ['kkk', '.k.', '.k.', '.k.', 'kkk'],
-  J: ['..k', '..k', '..k', 'k.k', '.k.'],
-  K: ['k.k', 'k.k', 'kk.', 'k.k', 'k.k'],
-  L: ['k..', 'k..', 'k..', 'k..', 'kkk'],
-  M: ['kkk', 'kkk', 'k.k', 'k.k', 'k.k'],
-  N: ['kk.', 'k.k', 'k.k', 'k.k', 'k.k'],
-  O: ['.k.', 'k.k', 'k.k', 'k.k', '.k.'],
-  P: ['kk.', 'k.k', 'kk.', 'k..', 'k..'],
-  Q: ['.k.', 'k.k', 'k.k', 'kk.', '.kk'],
-  R: ['kk.', 'k.k', 'kk.', 'k.k', 'k.k'],
-  S: ['.kk', 'k..', '.k.', '..k', 'kk.'],
-  T: ['kkk', '.k.', '.k.', '.k.', '.k.'],
-  U: ['k.k', 'k.k', 'k.k', 'k.k', '.kk'],
-  V: ['k.k', 'k.k', 'k.k', 'k.k', '.k.'],
-  W: ['k.k', 'k.k', 'k.k', 'kkk', 'kkk'],
-  X: ['k.k', 'k.k', '.k.', 'k.k', 'k.k'],
-  Y: ['k.k', 'k.k', '.k.', '.k.', '.k.'],
-  Z: ['kkk', '..k', '.k.', 'k..', 'kkk'],
-  '0': ['kkk', 'k.k', 'k.k', 'k.k', 'kkk'],
-  '1': ['.k.', 'kk.', '.k.', '.k.', 'kkk'],
-  '2': ['kkk', '..k', 'kkk', 'k..', 'kkk'],
-  '3': ['kkk', '..k', '.kk', '..k', 'kkk'],
-  '4': ['k.k', 'k.k', 'kkk', '..k', '..k'],
-  '5': ['kkk', 'k..', 'kkk', '..k', 'kkk'],
-  '6': ['kkk', 'k..', 'kkk', 'k.k', 'kkk'],
-  '7': ['kkk', '..k', '.k.', '.k.', '.k.'],
-  '8': ['kkk', 'k.k', 'kkk', 'k.k', 'kkk'],
-  '9': ['kkk', 'k.k', 'kkk', '..k', 'kkk'],
-  '%': ['k.k', '..k', '.k.', 'k..', 'k.k'],
-  '.': ['...', '...', '...', '...', '.k.'],
-  ',': ['...', '...', '...', '.k.', 'k..'],
-  '!': ['.k.', '.k.', '.k.', '...', '.k.'],
-  '?': ['kk.', '..k', '.k.', '...', '.k.'],
-  '-': ['...', '...', 'kkk', '...', '...'],
-  ':': ['...', '.k.', '...', '.k.', '...'],
-  "'": ['.k.', '.k.', '...', '...', '...'],
-  '/': ['..k', '..k', '.k.', 'k..', 'k..'],
-  '<': ['..k', '.k.', 'k..', '.k.', '..k'],
-  '+': ['...', '.k.', 'kkk', '.k.', '...'],
-  '·': ['...', '...', '.k.', '...', '...'],
-  '(': ['.k.', 'k..', 'k..', 'k..', '.k.'],
-  ')': ['.k.', '..k', '..k', '..k', '.k.'],
-  '&': ['.k.', 'k.k', '.k.', 'k.k', '.kk'],
-  '_': ['...', '...', '...', '...', 'kkk'],
-  '#': ['k.k', 'kkk', 'k.k', 'kkk', 'k.k'],
-  '=': ['...', 'kkk', '...', 'kkk', '...'],
-}
+const PLANT: Grid = ['..p.p..', '.pPpPp.', 'ppPpPpp', '.ppPpp.', '..ppp..', '...b...', '.ooooo.', '.ooooo.', '..ooo..']
 
 const rect = (x: number, y: number, width: number, height: number): string => `M${x} ${y}h${width}v${height}h-${width}z`
 
@@ -276,15 +232,31 @@ const fill = (color: string, d: string): string => (d === '' ? '' : `<path fill=
 
 const at = (x: number, y: number, body: string): string => `<g transform="translate(${x} ${y})">${body}</g>`
 
-/** Frames shown in turn, each held the same time and switched outright: no tweening, as a sprite sheet would. */
-const flipbook = (frames: readonly string[], seconds: number): string =>
-  frames
-    .map((frame, shown) => {
-      const values = frames.map((_, i) => (i === shown ? 'visible' : 'hidden')).join(';')
+/**
+ * Frames shown in turn, each held the same time and switched outright: no tweening, as a sprite sheet would.
+ * A frame given twice running is held for two beats and drawn once, and an empty one draws nothing.
+ */
+const flipbook = (frames: readonly string[], seconds: number): string => {
+  const held: { frame: string; from: number }[] = []
 
-      return `<g visibility="${shown === 0 ? 'visible' : 'hidden'}"><animate attributeName="visibility" values="${values}" dur="${seconds}s" calcMode="discrete" repeatCount="indefinite"/>${frame}</g>`
+  frames.forEach((frame, i) => {
+    if (held.at(-1)?.frame !== frame) {
+      held.push({ frame, from: i })
+    }
+  })
+
+  const keyTimes = held.length === frames.length ? '' : ` keyTimes="${held.map(one => Number((one.from / frames.length).toFixed(3))).join(';')}"`
+
+  return held
+    .map(({ frame }, shown) => {
+      const values = held.map((_, i) => (i === shown ? 'visible' : 'hidden')).join(';')
+
+      return frame === ''
+        ? ''
+        : `<g visibility="${shown === 0 ? 'visible' : 'hidden'}"><animate attributeName="visibility" values="${values}"${keyTimes} dur="${seconds}s" calcMode="discrete" repeatCount="indefinite"/>${frame}</g>`
     })
     .join('')
+}
 
 const drifting = (fromX: number, toX: number, y: number, seconds: number, clock: number, body: string): string => {
   const values = Array.from({ length: Math.ceil((toX - fromX + 1) / 2) }, (_, i) => `${fromX + i * 2} ${y}`).join(';')
@@ -331,147 +303,349 @@ const confetti = (): string => {
   }).join('')
 }
 
+// ---------- Words ----------
+
+/** How the words measure at the scale the art is drawn at, in the art's pixels. */
+type Type = {
+  /** The art's pixels to one of the font's. */
+  t: number
+  /** How tall a capital stands. */
+  cap: number
+  /** From one line of words to the next. */
+  line: number
+  /** How tall the bar across the top is, and any sign: a line of capitals with room around it. */
+  bar: number
+  width: (text: string) => number
+}
+
+const typeAt = (scale: number): Type => {
+  const t = TEXT_PIXEL / scale
+  const cap = Math.ceil(CAP * t)
+
+  return { t, cap, line: Math.ceil(LINE * t), bar: cap + 4, width: text => Math.ceil(widthOf(text) * t) }
+}
+
 type Cast = {
+  type: Type
   sprite: (id: string, grid: readonly string[]) => string
   glyph: (char: string) => string
+  /** The most agents drawn at a desk of their own. */
+  seats: number
+  /** How much the building gives up to stand inside its pane. */
+  squeeze: number
+  /** A piece of furniture drawn once, at its own corner, and put wherever it is wanted: a big office is the same desk many times. */
+  part: (id: string, x: number, y: number, draw: () => string) => string
+  /** The number an agent's parts are marked with, so that hovering any of them shows its card. */
+  mark: (actor: Actor) => number
+  isMarked: (actor: Actor) => boolean
+  /** Where its card goes: just above this point. The last place said is where it is. */
+  pin: (actor: Actor, x: number, y: number) => void
+  hasCard: (actor: Actor) => boolean
 }
 
-/** The whole thought in two lines at most, as narrow as that lets them be. */
-const linesOf = (text: string): string[] => {
-  const words = text.replace(/…|\.{2,}/g, ' ').toUpperCase().split(/\s+/).filter(word => word !== '')
-  const wrappedAt = (chars: number): string[] =>
-    words.reduce<string[]>((lines, word) => {
-      const last = lines.at(-1)
+const lettered = (text: string, cast: Cast): string => {
+  let x = 0
+  let drawn = ''
 
-      return last !== undefined && last.length + 1 + word.length <= chars
-        ? [...lines.slice(0, -1), `${last} ${word}`]
-        : [...lines, word]
-    }, [])
-  let chars = LINE_CHARS
+  for (const char of plain(text)) {
+    if (GLYPHS[char] !== undefined) {
+      drawn += `<use href="#${cast.glyph(char)}" x="${x}"/>`
+    }
 
-  while (wrappedAt(chars).length > 2) {
-    chars += 1
+    x += acrossOf(char) + 1
   }
 
-  return wrappedAt(chars)
+  return drawn
 }
 
-const lettered = (text: string, cast: Cast): string =>
-  [...text]
-    .map((char, i) => {
-      const id = GLYPHS[char] === undefined ? '' : cast.glyph(char)
-
-      return id === '' ? '' : `<use href="#${id}" x="${i * 4}"/>`
-    })
-    .join('')
-
+/** Words with their top left corner here, in the art's pixels. They are drawn finer than the art, and so scaled down into it. */
 const say = (x: number, y: number, text: string, color: string, cast: Cast): string =>
-  `<g color="${color}" transform="translate(${x} ${y})">${lettered(text, cast)}</g>`
-
-const textWidth = (text: string): number => text.length * 4 - 1
+  text === ''
+    ? ''
+    : `<g color="${color}" transform="translate(${x} ${y})${cast.type.t === 1 ? '' : ` scale(${Number(cast.type.t.toFixed(5))})`}">${lettered(text, cast)}</g>`
 
 const hasEndedStatus = (status: BoardStatus): boolean =>
   status === 'completed' || status === 'failed' || status === 'killed' || status === 'gone'
 
 const isWorking = (actor: Actor): boolean => !hasEndedStatus(actor.status)
 
+const escaped = (text: string): string => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+
+/** A part of an agent that shows its card when hovered. One that has no card says the same in the surface's own tooltip. */
+const hot = (actor: Actor, body: string, cast: Cast): string => {
+  if (body === '') {
+    return ''
+  }
+
+  const said = escaped(`${actor.label}: ${actor.thought === actor.label ? actor.words : actor.thought}`)
+  const isFirst = !cast.isMarked(actor)
+
+  // With a card, the words are there once for anyone who cannot see it. Without one, every part has them to show.
+  return `<g class="h${cast.mark(actor)}">${cast.hasCard(actor) ? (isFirst ? `<desc>${said}</desc>` : '') : `<title>${said}</title>`}${body}</g>`
+}
+
+/** A thought as the board writes it: on one line, and with no dots trailing off. */
+const tidy = (text: string): string => text.replace(/…|\.{2,}/g, ' ').replace(/\s+/g, ' ').trim()
+
+const wrapped = (text: string, pixels: number): string[] =>
+  text
+    .split(/\s+/)
+    .filter(word => word !== '')
+    .reduce<string[]>((lines, word) => {
+      const last = lines.at(-1)
+
+      return last !== undefined && widthOf(`${last} ${word}`) <= pixels ? [...lines.slice(0, -1), `${last} ${word}`] : [...lines, word]
+    }, [])
+
+const TONES: Partial<Record<BoardStatus, string>> = { failed: '#FF7A7A', waiting: '#FBF236', completed: '#99E550' }
+
+/** Everything about one agent, shown over it while it is hovered: its whole task, what it is on, and how far along. */
+const cardOf = (actor: Actor, x: number, y: number, id: number, width: number, cast: Cast): string => {
+  const { type } = cast
+  // Never wider than the scene it is shown over.
+  const most = Math.min(CARD_PIXELS, Math.floor((width - 14) / type.t))
+  const lines = [
+    ...wrapped(actor.label, most).map(text => ({ text, color: '#FFFFFF' })),
+    ...(actor.thought === '' || actor.thought === actor.label ? [] : wrapped(tidy(actor.thought), most).map(text => ({ text, color: '#CBDBFC' }))),
+    ...wrapped(actor.words, most).map(text => ({ text, color: TONES[actor.status] ?? '#EEC39A' })),
+  ]
+
+  // An agent with no task, thought or status has nothing to show.
+  if (lines.length === 0) {
+    return ''
+  }
+
+  const across = Math.max(...lines.map(line => type.width(line.text))) + 10
+  const down = lines.length * type.line + 5
+  const left = Math.max(1, Math.min(width - across - 1, Math.round(x - across / 2)))
+  const top = Math.max(1, y - down - 2)
+
+  return (
+    `<g id="c${id}" visibility="hidden" pointer-events="none" transform="translate(${left} ${top})">` +
+    fill('#FFFFFF', rect(1, 0, across - 2, down) + rect(0, 1, across, down - 2)) +
+    fill(INK, rect(1, 1, across - 2, down - 2)) +
+    fill(tunicOf(actor), rect(2, 2, 2, down - 4)) +
+    lines.map((line, i) => say(6, 3 + i * type.line, line.text, line.color, cast)).join('') +
+    '</g>'
+  )
+}
+
 // ---------- Bubbles ----------
 
 type Spot = { center: number; head: number }
 type Speaker = { actor: Actor; spot: Spot }
-type Bubble = Speaker & { lines: string[]; words: string; width: number; height: number; x: number; row: number }
+type Rect = { left: number; right: number; top: number; bottom: number }
+/** Where bubbles can go: up from `base` as far as `top`, and clear of anything in `blocks`. */
+type Sky = { base: number; top: number; blocks: readonly Rect[] }
+type Form = { lines: string[]; note: string }
+type Bubble = Speaker & Form & { width: number; height: number; x: number; top: number }
 
-/** Places each bubble over its agent, in the lowest row of sky where it touches none of the others. */
-const placed = (speakers: readonly Speaker[], width: number, mostRows: number): Bubble[] => {
-  const taken: { from: number; to: number }[][] = []
-  const bubbles: Bubble[] = []
-  // A failure gets its place first. The rest go left to right, which packs the most into a row.
-  const queue = [...speakers].sort(
-    (a, b) => Number(b.actor.status === 'failed') - Number(a.actor.status === 'failed') || a.spot.center - b.spot.center,
+/** The whole thought in this many lines at most: as few as that width takes, and then as even as they can be. */
+const linesOf = (text: string, across: number, most: number): string[] => {
+  let pixels = across
+
+  while (wrapped(text, pixels).length > most) {
+    pixels += 8
+  }
+
+  const count = wrapped(text, pixels).length
+
+  while (count > 1 && pixels > 8 && wrapped(text, pixels - 4).length === count) {
+    pixels -= 4
+  }
+
+  return wrapped(text, pixels)
+}
+
+/**
+ * What a bubble can say, the most first. How far along an agent is shows at its desk, so only bad news gets a line
+ * of its own. Terse, it is whatever takes the least wall: a failure says only that it failed, and the rest go narrow.
+ */
+const formsOf = (actor: Actor, isTerse: boolean): Form[] => {
+  const told = tidy(actor.thought)
+  const lines = linesOf(told, LINE_PIXELS, 2)
+  const note = actor.status === 'failed' || actor.status === 'waiting' ? actor.words : ''
+  const forms: Form[] = []
+
+  if (isTerse) {
+    forms.push(actor.status === 'failed' && note !== '' ? { lines: [], note } : { lines: linesOf(told, TERSE_PIXELS, 3), note: '' }, { lines, note: '' })
+  } else {
+    forms.push({ lines, note })
+
+    if (lines.length > 1) {
+      forms.push({ lines: [told], note })
+    }
+
+    if (note !== '') {
+      forms.push(actor.status === 'failed' ? { lines: [], note } : { lines: [told], note: '' })
+    }
+  }
+
+  return forms.filter(form => form.lines.length > 0 || form.note !== '')
+}
+
+const touches = (one: Rect, other: Rect): boolean =>
+  one.left < other.right + BUBBLE_GAP && one.right > other.left - BUBBLE_GAP && one.top < other.bottom + BUBBLE_GAP && one.bottom > other.top - BUBBLE_GAP
+
+const boxOf = (bubble: Bubble): Rect => ({ left: bubble.x, right: bubble.x + bubble.width, top: bubble.top, bottom: bubble.top + bubble.height })
+
+/** How a crowd of bubbles is laid out. The first way that gives everyone one is the way it is drawn. */
+type Manner = {
+  /** Each as far left as it can go, which leaves the most room for those still to come, rather than where it looks best. */
+  isPacked: boolean
+  lean: number
+  isTerse: boolean
+}
+
+const MANNERS: readonly Manner[] = [
+  { isPacked: false, lean: BUBBLE_LEAN, isTerse: false },
+  { isPacked: true, lean: BUBBLE_LEAN, isTerse: false },
+  { isPacked: true, lean: FAR_LEAN, isTerse: false },
+  { isPacked: true, lean: FAR_LEAN, isTerse: true },
+]
+
+/** Where a bubble this wide can start and touch nothing level with it: the place nearest where it wants to be, or the leftmost. */
+const startOf = (lowest: number, highest: number, wanted: number, isLeftmost: boolean, level: readonly Rect[], across: number): number | undefined => {
+  const ruled = level.map(box => ({ from: box.left - BUBBLE_GAP - across + 1, to: box.right + BUBBLE_GAP - 1 }))
+  const free = [wanted, lowest, ...ruled.flatMap(one => [one.from - 1, one.to + 1])].filter(
+    x => x >= lowest && x <= highest && ruled.every(one => x < one.from || x > one.to),
   )
 
-  queue.forEach(({ actor, spot }) => {
-    const lines = linesOf(actor.thought)
-    // No room in three pixels for a tilde: in the bubble an estimate reads as a time.
-    const words = actor.words.replaceAll('~', '').toUpperCase()
-    const inner = Math.max(words.length, ...lines.map(line => line.length)) * 4 - 1
-    const bubbleWidth = inner + PADDING_X + 3
-    const bubbleHeight = (lines.length + (words === '' ? 0 : 1)) * LINE_HEIGHT + 3
+  if (free.length === 0) {
+    return undefined
+  }
+
+  return isLeftmost ? Math.min(...free) : free.reduce((best, x) => (Math.abs(x - wanted) < Math.abs(best - wanted) ? x : best))
+}
+
+const levelWith = (boxes: readonly Rect[], top: number, bottom: number): Rect[] => boxes.filter(box => top < box.bottom + BUBBLE_GAP && bottom > box.top - BUBBLE_GAP)
+
+/** Each bubble over its agent, as low in the sky as it can rest without touching anything. */
+const arranged = (speakers: readonly Speaker[], width: number, sky: Sky, type: Type, manner: Manner): Bubble[] => {
+  const bubbles: Bubble[] = []
+  const urgency = (actor: Actor): number => (actor.status === 'failed' ? 0 : actor.status === 'waiting' ? 1 : 2)
+  // Bad news gets its place first. The rest go left to right, which packs the most in.
+  const queue = [...speakers].sort((a, b) => urgency(a.actor) - urgency(b.actor) || a.spot.center - b.spot.center)
+  // How far along the wall it can sit and still reach down to its agent, and where in that it would be centered.
+  const reachOf = (spot: Spot, across: number): { lowest: number; highest: number; wanted: number } => {
     const center = Math.round(spot.center)
-    const lowest = Math.max(2, center - bubbleWidth + 3)
-    const highest = Math.min(width - bubbleWidth - 2, center - 3)
-    const wanted = Math.max(lowest, Math.min(highest, Math.round(spot.center - bubbleWidth / 2)))
-    // Centered over its agent if it can be, else slid along the row as far as it can still reach down to it.
-    const places = Array.from({ length: highest - lowest + 1 }, (_, i) => lowest + i).sort(
-      (a, b) => Math.abs(a - wanted) - Math.abs(b - wanted),
-    )
+    const lowest = Math.max(2, center - across - manner.lean)
+    const highest = Math.min(width - across - 2, center + manner.lean)
 
-    for (let row = 0; row < mostRows; row += 1) {
-      const x = places.find(place =>
-        (taken[row] ?? []).every(span => place > span.to + BUBBLE_GAP || place + bubbleWidth < span.from - BUBBLE_GAP),
-      )
+    return { lowest, highest, wanted: Math.max(lowest, Math.min(highest, Math.round(spot.center - across / 2))) }
+  }
 
-      if (x !== undefined) {
-        taken[row] = [...(taken[row] ?? []), { from: x, to: x + bubbleWidth }]
-        bubbles.push({ actor, spot, lines, words, width: bubbleWidth, height: bubbleHeight, x, row })
+  for (const { actor, spot } of queue) {
+    const inTheWay = [...sky.blocks, ...bubbles.map(boxOf)]
 
-        // No row with room: the agent works on without a bubble, and hovering it still says.
-        return
+    for (const form of formsOf(actor, manner.isTerse)) {
+      const across = Math.max(type.width(form.note), ...form.lines.map(type.width)) + 8
+      const down = (form.lines.length + (form.note === '' ? 0 : 1)) * type.line + 3
+      const { lowest, highest, wanted } = reachOf(spot, across)
+      // Where its foot can rest: the bottom of the sky, or just clear of the top of something in the way. Never lower
+      // than the top of its agent, since a bubble level with its agent reads as someone else's.
+      const rests = [...new Set([sky.base, spot.head - 1, ...inTheWay.map(box => box.top - BUBBLE_GAP)])]
+        .filter(bottom => bottom <= sky.base && bottom < spot.head && bottom - down >= sky.top)
+        .sort((a, b) => b - a)
+      let found: Bubble | undefined
+
+      for (const bottom of rests) {
+        const x = startOf(lowest, highest, wanted, manner.isPacked && urgency(actor) === 2, levelWith(inTheWay, bottom - down, bottom), across)
+
+        if (x !== undefined) {
+          found = { actor, spot, ...form, width: across, height: down, x, top: bottom - down }
+          break
+        }
+      }
+
+      // No room for it however little it says: the agent works on without a bubble, and hovering it still says.
+      if (found !== undefined) {
+        bubbles.push(found)
+        break
       }
     }
-  })
+  }
+
+  if (!manner.isPacked) {
+    return bubbles
+  }
+
+  // Packed tight, each then moves back toward its agent as far as the others let it, the rightmost first.
+  for (const bubble of [...bubbles].sort((a, b) => b.x - a.x)) {
+    const { wanted } = reachOf(bubble.spot, bubble.width)
+    const others = levelWith([...sky.blocks, ...bubbles.filter(one => one !== bubble).map(boxOf)], bubble.top, bubble.top + bubble.height)
+
+    bubble.x = startOf(Math.min(bubble.x, wanted), Math.max(bubble.x, wanted), wanted, false, others, bubble.width) ?? bubble.x
+  }
 
   return bubbles
 }
 
-const rowHeights = (bubbles: readonly Bubble[]): number[] => {
-  const heights: number[] = []
+/**
+ * A bubble for every speaker there is room for: each where it looks best if that fits them all, else however fits the
+ * most. `isEasy` says everyone got one without any of them being cut down to fit.
+ */
+const placedIn = (speakers: readonly Speaker[], width: number, sky: Sky, type: Type): { bubbles: Bubble[]; isEasy: boolean } => {
+  let best: Bubble[] = []
 
-  for (const bubble of bubbles) {
-    heights[bubble.row] = Math.max(heights[bubble.row] ?? 0, bubble.height)
+  for (const manner of MANNERS) {
+    const bubbles = arranged(speakers, width, sky, type, manner)
+
+    if (bubbles.length === speakers.length) {
+      return { bubbles, isEasy: !manner.isTerse }
+    }
+
+    if (bubbles.length > best.length) {
+      best = bubbles
+    }
   }
 
-  return heights
+  return { bubbles: best, isEasy: false }
 }
 
-const drawBubbles = (bubbles: readonly Bubble[], base: number, cast: Cast): { tails: string; drawn: string } => {
-  const heights = rowHeights(bubbles)
-  const bottomOf = (row: number): number => base - heights.slice(0, row).reduce((sum, rowHeight) => sum + rowHeight + BUBBLE_GAP, 0)
+const placed = (speakers: readonly Speaker[], width: number, sky: Sky, type: Type): Bubble[] => placedIn(speakers, width, sky, type).bubbles
+
+const drawBubbles = (bubbles: readonly Bubble[], cast: Cast): { tails: string; drawn: string } => {
   let tails = ''
   let drawn = ''
 
-  for (const bubble of bubbles) {
+  bubbles.forEach(bubble => {
     const isBad = bubble.actor.status === 'failed'
     const edge = isBad ? '#AC3232' : INK
-    const bottom = bottomOf(bubble.row)
-    const top = bottom - bubble.height
-    const column = Math.round(bubble.spot.center)
+    const { top, bottom } = boxOf(bubble)
+    const head = Math.round(bubble.spot.center)
+    // Where the puffs meet the bubble: over the head if the bubble is, else under its nearest end.
+    const foot = Math.max(bubble.x + 3, Math.min(bubble.x + bubble.width - 4, head))
+    const rise = Math.max(1, bubble.spot.head - bottom - 1)
+    const { line } = cast.type
 
     // Puffs up from its head, as a thought rises.
     for (let y = bottom + 1; y < bubble.spot.head; y += 4) {
+      const column = Math.round(foot + ((head - foot) * (y - bottom - 1)) / rise)
+
       tails += fill(edge, rect(column - 1, y, 3, 3)) + fill('#FFFFFF', rect(column, y + 1, 1, 1))
     }
 
-    drawn += at(
-      bubble.x,
-      top,
-      fill(edge, rect(1, 0, bubble.width - 2, bubble.height) + rect(0, 1, bubble.width, bubble.height - 2)) +
-        fill('#FFFFFF', rect(1, 1, bubble.width - 2, bubble.height - 2)) +
-        // Its shirt's color down the side, which says whose it is when bubbles stack.
-        fill(tunicOf(bubble.actor), rect(1, 1, 2, bubble.height - 2)) +
-        bubble.lines.map((line, i) => say(PADDING_X, 2 + i * LINE_HEIGHT, line, INK, cast)).join('') +
-        (bubble.words === '' ? '' : say(PADDING_X, 2 + bubble.lines.length * LINE_HEIGHT, bubble.words, isBad ? '#AC3232' : '#595652', cast)),
+    drawn += hot(
+      bubble.actor,
+      at(
+        bubble.x,
+        top,
+        fill(edge, rect(1, 0, bubble.width - 2, bubble.height) + rect(0, 1, bubble.width, bubble.height - 2)) +
+          fill('#FFFFFF', rect(1, 1, bubble.width - 2, bubble.height - 2)) +
+          // Its shirt's color down the side, which says whose it is when bubbles stack.
+          fill(tunicOf(bubble.actor), rect(1, 1, 2, bubble.height - 2)) +
+          bubble.lines.map((text, at) => say(5, 2 + at * line, text, INK, cast)).join('') +
+          say(5, 2 + bubble.lines.length * line, bubble.note, isBad ? '#AC3232' : '#8A5A00', cast),
+      ),
+      cast,
     )
-  }
+  })
 
   return { tails, drawn }
 }
 
 // ---------- The furniture ----------
-
-const titled = (actor: Actor, body: string): string => `<g><title>${escaped(`${actor.label}: ${actor.thought === actor.label ? actor.words : actor.thought}`)}</title>${body}</g>`
-
-const escaped = (text: string): string => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 
 const clerkSprite = (actor: Actor, body: keyof typeof BODIES, eyes: Eyes, cast: Cast): string => {
   const hair = HAIRS[actor.seat < 0 ? 0 : actor.seat % HAIRS.length] ?? 'b'
@@ -486,24 +660,67 @@ const LIGHTS: Partial<Record<BoardStatus, string>> = {
   idle: '#DF7126',
   failed: RED,
 }
+const DONE = '#99E550'
+const OFF = '#847E87'
 
-/** A partition, with a light on it that says how its agent stands. An empty one has none lit. */
-const cubeOf = (x: number, rim: number, floor: number, width: number, status: BoardStatus | null): string =>
-  fill(FABRIC, rect(x, rim, width - 1, floor - rim)) +
-  fill(FABRIC_RIM, rect(x - 1, rim - 1, width, 2)) +
-  fill((status === null ? undefined : LIGHTS[status]) ?? DARK, rect(x + 2, rim + 5, Math.max(2, width - 6), 3))
+/** A tick, five across and four down. */
+const tickOf = (x: number, y: number, cast: Cast): string =>
+  cast.part('tick', x, y, () => fill(DONE, rect(4, 0, 1, 1) + rect(3, 1, 1, 1) + rect(0, 2, 1, 1) + rect(2, 2, 1, 1) + rect(1, 3, 1, 1)))
 
-/** Who shows above the partition. Nobody, once they have gone home or are at the copier. */
-const headOf = (actor: Actor, x: number, rim: number, width: number, cast: Cast): string => {
-  const left = x - 1 + Math.floor((width - SPRITE_WIDTH - 1) / 2)
-  const y = rim - 11
+/**
+ * The strip on a partition, which says how its agent stands: filled as far as the agent says it has got, lit whole
+ * where it has not said, a tick once it is done.
+ */
+const gaugeOf = (actor: Actor, x: number, y: number, width: number, cast: Cast): string => {
+  const whole = rect(x, y, width, 3)
 
-  if (actor.status === 'failed') {
-    return `<g color="#847E87">${at(left, y, clerkSprite(actor, 'stand', 'out', cast))}</g>`
+  if (actor.status === 'completed') {
+    return tickOf(x + Math.floor((width - 5) / 2), y - 1, cast)
   }
 
-  if (!isWorking(actor) || actor.atCopier) {
-    return ''
+  if (actor.status === 'killed' || actor.status === 'gone') {
+    const middle = x + Math.floor((width - 3) / 2)
+
+    return fill(DARK, whole) + fill(OFF, actor.status === 'killed' ? rect(middle, y, 3, 3) : rect(middle, y + 1, 3, 1))
+  }
+
+  const color = LIGHTS[actor.status] ?? DARK
+  const isBusy = actor.status === 'running' || actor.status === 'pending'
+
+  if (actor.percent === null) {
+    return isBusy ? flipbook([fill(color, whole), fill('#C9EEF8', whole)], 0.9) : fill(color, whole)
+  }
+
+  const lit = rect(x, y, Math.max(1, Math.round((width * actor.percent) / 100)), 3)
+
+  return fill(DARK, whole) + (actor.status === 'waiting' ? flipbook([fill(color, lit), fill('#B8A800', lit)], 0.8) : fill(color, lit))
+}
+
+/**
+ * A partition, with its agent's strip on it, and along its top a band in the color of its agent's shirt: the same color
+ * as the edge of its bubble, which says whose is whose when a bubble cannot sit right over its agent. An empty desk has
+ * no band and a dark strip.
+ */
+const cubeOf = (x: number, rim: number, floor: number, width: number, actor: Actor | null, cast: Cast): string => {
+  const down = floor - rim
+  const panel = (): string => fill(FABRIC, rect(0, 0, width - 1, down)) + fill(FABRIC_RIM, rect(-1, -1, width, 2))
+
+  if (actor === null) {
+    return cast.part(`cube-${width}-${down}-empty`, x, rim, () => panel() + fill(DARK, rect(1, 5, width - 3, 3)))
+  }
+
+  const band = (left: number, top: number): string => fill(tunicOf(actor), rect(left + 1, top + 2, width - 3, 1))
+
+  // A finished desk is the same as every other finished desk of its color: in a big run there are hundreds.
+  return actor.status === 'completed'
+    ? cast.part(`cube-${width}-${down}-done-${tunicOf(actor).slice(1)}`, x, rim, () => panel() + band(0, 0) + gaugeOf(actor, 1, 5, width - 3, cast))
+    : cast.part(`cube-${width}-${down}`, x, rim, panel) + band(x, rim) + gaugeOf(actor, x + 1, rim + 5, width - 3, cast)
+}
+
+/** Someone who is in, with the top left corner of their sprite here: blinking at work, asleep when idle, a hand up when they need him. */
+const personOf = (actor: Actor, left: number, y: number, cast: Cast): string => {
+  if (actor.status === 'failed') {
+    return `<g color="#847E87">${at(left, y, clerkSprite(actor, 'stand', 'out', cast))}</g>`
   }
 
   const color = tunicOf(actor)
@@ -514,18 +731,41 @@ const headOf = (actor: Actor, x: number, rim: number, width: number, cast: Cast)
     return `<g color="${color}">${at(left, y, shut + at(11, 1, snoring()))}</g>`
   }
 
-  const blinking = flipbook([open, open, open, shut], 2.4)
-  // Back from the copier: it shows when it has walked over.
-  const delay = actor.wasAtCopier ? `<set attributeName="visibility" to="visible" begin="2s"/>` : ''
+  const blinking = `<g color="${color}">${at(left, y, flipbook([open, open, open, shut], 2.4))}</g>`
 
-  return `<g color="${color}" visibility="${actor.wasAtCopier ? 'hidden' : 'visible'}">${delay}${at(left, y, blinking)}</g>`
+  if (actor.status !== 'waiting') {
+    return blinking
+  }
+
+  // An arm up beside its head, and a mark that blinks: it is the one state that is waiting on him.
+  const arm = fill(INK, rect(left + 10, y + 1, 3, 10) + rect(left + 10, y - 1, 4, 3)) + fill('#EEC39A', rect(left + 11, y + 2, 1, 9) + rect(left + 11, y, 2, 1))
+  const mark = fill(INK, rect(left - 1, y - 3, 3, 7)) + fill('#FBF236', rect(left, y - 2, 1, 3) + rect(left, y + 2, 1, 1))
+
+  return arm + blinking + flipbook([mark, mark, ''], 0.8)
+}
+
+/** Who shows above the partition. Nobody, once they have gone home or are at the copier. */
+const headOf = (actor: Actor, x: number, rim: number, width: number, cast: Cast): string => {
+  if (actor.status !== 'failed' && (!isWorking(actor) || actor.atCopier)) {
+    return ''
+  }
+
+  const person = personOf(actor, x - 1 + Math.floor((width - SPRITE_WIDTH - 1) / 2), rim - 11, cast)
+
+  // Back from the copier: it shows when it has walked over.
+  return isWorking(actor) && actor.wasAtCopier ? `<g visibility="hidden"><set attributeName="visibility" to="visible" begin="2s"/>${person}</g>` : person
+}
+
+/** Where the rain falls over a partition: the cloud, and under it the drops. */
+const cloudOver = (x: number, rim: number, width: number): Rect => {
+  const left = x + Math.floor((width - 12) / 2)
+
+  return { left, right: left + 11, top: rim - 20, bottom: rim - 12 }
 }
 
 /** Rain indoors and a red stapler on the partition, for anyone who failed. */
-const failureOf = (x: number, rim: number, width: number): string =>
-  at(x + Math.floor((width - 12) / 2), rim - 20, raining()) +
-  fill(RED, rect(x + width - 8, rim - 3, 6, 2)) +
-  fill(INK, rect(x + width - 8, rim - 1, 6, 1))
+const failureOf = (x: number, rim: number, width: number, cast: Cast): string =>
+  cast.part('rain', cloudOver(x, rim, width).left, rim - 20, raining) + fill(RED, rect(x + width - 8, rim - 3, 6, 2)) + fill(INK, rect(x + width - 8, rim - 1, 6, 1))
 
 const copierOf = (floor: number): string =>
   fill(INK, rect(5, floor - 18, 20, 19)) +
@@ -544,6 +784,8 @@ const walkOf = (fromX: number, toX: number, y: number): string => {
   return `<animateTransform attributeName="transform" type="translate" values="${values}" dur="2s" calcMode="discrete" fill="freeze"/>`
 }
 
+const spotInQueue = (i: number, total: number): number => QUEUE_START + i * Math.max(4, Math.min(QUEUE_STEP, Math.floor(72 / Math.max(1, total))))
+
 /** Anyone running a command stands in line at the copier. */
 const queueOf = (queue: readonly { actor: Actor; home: number }[], bottom: number, cast: Cast): string =>
   queue
@@ -556,18 +798,18 @@ const queueOf = (queue: readonly { actor: Actor; home: number }[], bottom: numbe
       const walking = isArriving ? `<g><set attributeName="visibility" to="hidden" begin="2s"/>${run}</g>` : ''
       const waiting = `<g visibility="${isArriving ? 'hidden' : 'visible'}">${isArriving ? '<set attributeName="visibility" to="visible" begin="2s"/>' : ''}${stand}</g>`
 
-      return titled(actor, `<g color="${tunicOf(actor)}" transform="translate(${isArriving ? home : x} ${y})">${isArriving ? walkOf(home, x, y) : ''}${walking}${waiting}</g>`)
+      cast.pin(actor, x + SPRITE_WIDTH / 2, y + 2)
+
+      return hot(actor, `<g color="${tunicOf(actor)}" transform="translate(${isArriving ? home : x} ${y})">${isArriving ? walkOf(home, x, y) : ''}${walking}${waiting}</g>`, cast)
     })
     .join('')
-
-const spotInQueue = (i: number, total: number): number => COPIER_ROOM + i * Math.max(4, Math.min(QUEUE_STEP, Math.floor(72 / Math.max(1, total))))
 
 /** Back at the desk from the copier: the walk there, then the head takes over. */
 const returningOf = (actor: Actor, home: number, bottom: number, cast: Cast): string => {
   const y = bottom - SPRITE_HEIGHT - 1
   const run = flipbook([clerkSprite(actor, 'run1', 'open', cast), at(0, -1, clerkSprite(actor, 'run2', 'open', cast))], 0.36)
 
-  return `<g color="${tunicOf(actor)}" transform="translate(${COPIER_ROOM} ${y})">${walkOf(COPIER_ROOM, home, y)}<g><set attributeName="visibility" to="hidden" begin="2s"/>${run}</g></g>`
+  return `<g color="${tunicOf(actor)}" transform="translate(${QUEUE_START} ${y})">${walkOf(QUEUE_START, home, y)}<g><set attributeName="visibility" to="hidden" begin="2s"/>${run}</g></g>`
 }
 
 /** A finished report on its way to the pile, which is fan-in you can watch. */
@@ -582,6 +824,13 @@ const flightOf = (fromX: number, fromY: number, toX: number, toY: number): strin
   return `<path fill="#FFFFFF" d="M0 0h5v4h-5z" visibility="hidden"><animateTransform attributeName="transform" type="translate" values="${values}" dur="2s" calcMode="discrete" fill="freeze"/><set attributeName="visibility" to="visible" begin="0s" dur="2s"/></path>`
 }
 
+const plateOf = (x: number, y: number, text: string, color: string, cast: Cast): string =>
+  at(x, y, fill(INK, rect(0, 0, cast.type.width(text) + 4, cast.type.bar)) + say(2, 2, text, color, cast))
+
+/** How high the boss's crown stands over the floor of its room, which is where its thought rises from. */
+const BOSS_HEIGHT = 22
+
+/** The corner office: the boss behind its desk, the pile of finished reports, and how far through its own list it is. */
 const bossRoomOf = (office: Office, x: number, top: number, floor: number, right: number, reports: number, clock: number, cast: Cast): string => {
   const width = right - x
   const pile = Math.min(floor - top - 22, Math.ceil(Math.sqrt(reports) * 2.4))
@@ -597,24 +846,40 @@ const bossRoomOf = (office: Office, x: number, top: number, floor: number, right
     }
   }
 
-  const boss = office.boss === null ? '' : titled(office.boss, `<g color="#5B6EE1">${at(x + 8, floor - SPRITE_HEIGHT + 1, cast.sprite('boss-sit', person(BOSS, 'b', 'sit', 'open')))}</g>`)
+  const { boss } = office
+  const front = { left: x + 6, right: right - 4 }
+  const hasGauge = boss !== null && boss.percent !== null
+  const gauge = hasGauge
+    ? fill(INK, rect(front.left + 2, floor - 6, 16, 4)) +
+      fill(DARK, rect(front.left + 3, floor - 5, 14, 2)) +
+      fill('#9BDCF0', rect(front.left + 3, floor - 5, Math.max(1, Math.round((14 * (boss?.percent ?? 0)) / 100)), 2))
+    : ''
+  // How many reports are in, under the pile. The word goes where there is room for it beside the boss's own bar.
+  const room = front.right - 1 - (hasGauge ? front.left + 20 : front.left + 1)
+  const counted = [`${reports} REPORT${reports === 1 ? '' : 'S'}`, `${reports}`].find(text => cast.type.width(text) + 4 <= room)
+  const count = reports > 0 && counted !== undefined ? plateOf(front.right - 1 - cast.type.width(counted) - 4, floor - cast.type.bar, counted, '#FFFFFF', cast) : ''
+
+  if (boss !== null) {
+    cast.pin(boss, x + 14, floor - BOSS_HEIGHT)
+  }
 
   return (
     fill(GLASS, rect(x, top, width, floor - top)) +
     fill(SKY, rect(x + 4, top + 3, width - 8, Math.max(6, floor - top - 26))) +
     at(0, 0, drifting(x - 8, right - 16, top + 5, 120, clock, `<g opacity=".9">${paint(CLOUD)}</g>`)) +
     fill('#847E87', rect(x, top, 2, floor - top)) +
-    boss +
-    fill('#663931', rect(x + 5, floor - 10, width - 8, 2) + rect(x + 7, floor - 8, 2, 8) + rect(right - 6, floor - 8, 2, 8)) +
+    (boss === null ? '' : hot(boss, `<g color="#5B6EE1">${at(x + 8, floor - 23, cast.sprite('boss-stand', person(BOSS, 'b', 'stand', 'open')))}</g>`, cast)) +
+    // A desk with a front to it, so the boss shows from the chest up with its hands on the top.
+    fill('#8F563B', rect(x + 5, floor - 10, width - 8, 2)) +
+    fill('#663931', rect(front.left, floor - 8, front.right - front.left, 8)) +
     fill('#FFFFFF', sheets) +
     fill('#CBDBFC', edges) +
     fill('#FFFFFF', rect(x + 21, floor - 14, 4, 4)) +
-    flipbook([fill('#FFFFFF', rect(x + 22, floor - 17, 1, 2)), fill('#FFFFFF', rect(x + 23, floor - 18, 1, 2))], 1.4)
+    flipbook([fill('#FFFFFF', rect(x + 22, floor - 17, 1, 2)), fill('#FFFFFF', rect(x + 23, floor - 18, 1, 2))], 1.4) +
+    gauge +
+    count
   )
 }
-
-const plateOf = (x: number, y: number, text: string, color: string, cast: Cast): string =>
-  at(x, y, fill(INK, rect(0, 0, textWidth(text) + 5, 8)) + say(2, 2, text, color, cast))
 
 const talliesOf = (office: Office): { done: number; working: number; failed: number } => {
   const all = office.departments.flatMap(department => department.agents)
@@ -628,21 +893,27 @@ const talliesOf = (office: Office): { done: number; working: number; failed: num
 
 /** A bar across the top: what is under way in the script's own words, and the tally. Words that do not fit are left out whole. */
 const hudOf = (office: Office, width: number, cast: Cast): string => {
+  const { type } = cast
   const { done, working, failed } = talliesOf(office)
-  const right = [done > 0 || working > 0 ? `${done} DONE` : '', working > 0 ? `${working} WORKING` : ''].filter(part => part !== '').join(' · ')
-  const bad = failed > 0 ? `${right === '' ? '' : ' · '}${failed} FAILED` : ''
-  const rightWidth = (right.length + bad.length) * 4
+  const tallyOf = (words: readonly [string, string, string]): { right: string; bad: string } => {
+    const right = [done > 0 || working > 0 ? `${done}${words[0]}` : '', working > 0 ? `${working}${words[1]}` : ''].filter(part => part !== '').join(' · ')
+
+    return { right, bad: failed > 0 ? `${right === '' ? '' : ' · '}${failed}${words[2]}` : '' }
+  }
+  // In words where there is room for them, else the numbers alone, in their colors, else nothing.
+  const { right, bad } = [tallyOf([' DONE', ' WORKING', ' FAILED']), tallyOf(['', '', ''])].find(one => type.width(`${one.right}${one.bad}`) + 8 <= width) ?? { right: '', bad: '' }
+  const rightWidth = type.width(`${right}${bad}`)
   const now = office.departments.filter(department => department.state === 'now')
   const only = now.length === 1 ? now[0] : undefined
   const named = only === undefined ? (now.length > 1 ? `${now.length} RUNS AT WORK` : '') : only.id === 'team' ? '' : only.title
   const told = only !== undefined && only.detail !== '' ? `${only.title}: ${only.detail.toUpperCase()}` : named
-  const left = (told.length * 4 + rightWidth + 12 <= width ? told : '') || (named.length * 4 + rightWidth + 12 <= width ? named : '')
+  const left = [told, named].find(text => type.width(text) + rightWidth + 14 <= width) ?? ''
 
   return (
-    fill(INK, rect(0, 0, width, HUD_HEIGHT)) +
+    fill(INK, rect(0, 0, width, type.bar)) +
     say(4, 2, left, '#FFFFFF', cast) +
-    say(width - 4 - rightWidth + 1, 2, right, '#EEC39A', cast) +
-    say(width - 4 - bad.length * 4 + 1, 2, bad, '#FF7A7A', cast)
+    say(width - 4 - rightWidth, 2, right, '#EEC39A', cast) +
+    say(width - 4 - type.width(bad), 2, bad, '#FF7A7A', cast)
   )
 }
 
@@ -669,115 +940,6 @@ const farmOf = (agents: readonly Actor[], x: number, right: number, bottom: numb
   })
 
   return fill('#8A8FA3', dim) + fill(RED, bad)
-}
-
-// ---------- The band: one floor, close up ----------
-
-type FrontRow = { seated: Actor[]; farm: Actor[]; cube: number; first: number; span: number; capacity: number; slotOf: (actor: Actor) => number }
-
-/** People sit scattered, as in any office, and stay put as others arrive. It also leaves their bubbles room. */
-const slotsOf = (seated: readonly Actor[], capacity: number): Map<Actor, number> => {
-  const slots = new Map<Actor, number>()
-  const taken = new Set<number>()
-
-  for (const actor of seated) {
-    let slot = Math.floor((((Math.max(0, actor.seat) + 1) * 0.618) % 1) * capacity)
-
-    while (taken.has(slot)) {
-      slot = (slot + 1) % capacity
-    }
-
-    taken.add(slot)
-    slots.set(actor, slot)
-  }
-
-  return slots
-}
-
-/** Who sits in the row: anyone who failed and anyone working, then whoever finished last, and the rest go behind. */
-const frontRowOf = (office: Office, first: number, right: number): FrontRow => {
-  const everyone = office.departments.flatMap(department => department.agents)
-  const now = office.departments.filter(department => department.state === 'now').flatMap(department => department.agents)
-  const span = right - first - 2
-  const room = Math.floor(span / NARROWEST_CUBE)
-  const wanted = [...everyone.filter(one => one.status === 'failed'), ...now.filter(isWorking), ...now.filter(one => !isWorking(one) && one.status !== 'failed').reverse()]
-  const seated = [...new Set(wanted)].slice(0, room).sort((a, b) => a.seat - b.seat)
-  const chosen = new Set(seated)
-  const farm = everyone.filter(one => !chosen.has(one))
-  const cube = Math.max(NARROWEST_CUBE, Math.min(WIDEST_CUBE, Math.floor(span / Math.max(1, seated.length))))
-  const capacity = Math.max(1, Math.floor(span / cube))
-  const slots = slotsOf(seated, capacity)
-
-  return { seated, farm, cube, first, span, capacity, slotOf: actor => slots.get(actor) ?? 0 }
-}
-
-const bandSpeakers = (office: Office, width: number, height: number, row: FrontRow, bossX: number): Speaker[] => {
-  const rim = height - RIM_TO_BOTTOM
-  const queue = row.seated.filter(one => isWorking(one) && one.atCopier)
-  const speakers = row.seated
-    .filter(one => isWorking(one) || one.status === 'failed')
-    .map((actor): Speaker => {
-      const queued = isWorking(actor) && actor.atCopier ? queue.indexOf(actor) : -1
-
-      return queued >= 0
-        ? { actor, spot: { center: spotInQueue(queued, queue.length) + SPRITE_WIDTH / 2, head: height - SPRITE_HEIGHT - 2 } }
-        : { actor, spot: { center: row.first + row.slotOf(actor) * row.cube + row.cube / 2, head: rim - 9 } }
-    })
-
-  return office.boss === null ? speakers : [...speakers, { actor: office.boss, spot: { center: bossX + 14, head: height - CARPET - 16 } }]
-}
-
-const bandRows = (height: number): number => Math.max(1, Math.floor((height - RIM_TO_BOTTOM - 11 - HUD_HEIGHT - 2) / BUBBLE_ROW))
-
-const bossRoomWidth = (width: number): number => Math.max(44, Math.min(70, Math.round(width * 0.2)))
-
-/** The scale the band draws at: the largest that gives everyone a bubble and a proper cubicle, else whichever bubbles the most. */
-const bandScale = (office: Office, slot: number): number => {
-  let best = BAND_SCALES[BAND_SCALES.length - 1] ?? 2
-  let most = -1
-
-  for (const scale of BAND_SCALES) {
-    const width = Math.max(NARROWEST, Math.floor(slot / scale))
-    const height = Math.floor(BAND_PIXELS / scale)
-    const bossX = width - bossRoomWidth(width)
-    const row = frontRowOf(office, COPIER_ROOM + 2, bossX)
-    const speakers = bandSpeakers(office, width, height, row, bossX)
-    const shown = placed(speakers, width, bandRows(height)).length
-    const isRoomy = width >= 170 && row.seated.filter(one => isWorking(one) || one.status === 'failed').length * 12 <= row.span
-
-    if (isRoomy && shown === speakers.length) {
-      return scale
-    }
-
-    if (shown > most) {
-      best = scale
-      most = shown
-    }
-  }
-
-  return best
-}
-
-const directoryOf = (office: Office, x: number, y: number, mostLines: number, cast: Cast): string => {
-  const groups = new Set(office.departments.map(department => department.group))
-
-  // Agents with no run have no stages to list, and the bar already counts them.
-  if (office.departments.length === 0 || (office.departments.length === 1 && office.departments[0]?.id === 'team')) {
-    return ''
-  }
-
-  const nameOf = (department: Department): string => (groups.size > 1 ? `${department.group}: ${department.title}` : department.title)
-  const listed = groups.size > 1 ? office.departments.filter(department => department.state === 'now') : office.departments
-  const kept = listed.length <= mostLines ? listed : [...listed.filter(department => department.state === 'now'), ...listed.filter(department => department.state === 'past').reverse(), ...listed.filter(department => department.state === 'next')].slice(0, mostLines)
-  const lines = kept.map(department => {
-    const finished = department.agents.filter(one => !isWorking(one)).length
-    const count = department.agents.length === 0 ? '' : ` ${finished}/${department.agents.length}`
-
-    return { text: `${nameOf(department)}${count}`, color: department.state === 'now' ? '#FBF236' : department.state === 'past' ? '#EEC39A' : '#8A8FA3' }
-  })
-  const width = Math.max(...lines.map(line => textWidth(line.text))) + 5
-
-  return at(x, y, fill(INK, rect(0, 0, width, lines.length * 7 + 2)) + lines.map((line, i) => say(2, 2 + i * 7, line.text, line.color, cast)).join(''))
 }
 
 const ceilingOf = (width: number, y: number, depth: number, isLit: boolean): string => {
@@ -831,41 +993,176 @@ const windowOf = (x: number, y: number, width: number, height: number, clock: nu
   )
 }
 
-const bandOf = (office: Office, width: number, height: number, clock: number, cast: Cast): string => {
+// ---------- The band: one floor, close up ----------
+
+type FrontRow = { seated: Actor[]; farm: Actor[]; cube: number; first: number; span: number; capacity: number; slotOf: (actor: Actor) => number }
+
+/** People sit scattered, as in any office, and stay put as others arrive. It also leaves their bubbles room. */
+const slotsOf = (seated: readonly Actor[], capacity: number): Map<Actor, number> => {
+  const slots = new Map<Actor, number>()
+  const taken = new Set<number>()
+
+  for (const actor of seated) {
+    let slot = Math.floor((((Math.max(0, actor.seat) + 1) * 0.618) % 1) * capacity)
+
+    while (taken.has(slot)) {
+      slot = (slot + 1) % capacity
+    }
+
+    taken.add(slot)
+    slots.set(actor, slot)
+  }
+
+  return slots
+}
+
+/** Who sits in the row: anyone who failed and anyone working, then whoever finished last, and the rest go behind. */
+const frontRowOf = (office: Office, first: number, right: number, seats: number): FrontRow => {
+  const everyone = office.departments.flatMap(department => department.agents)
+  const now = office.departments.filter(department => department.state === 'now').flatMap(department => department.agents)
+  const span = right - first - 2
+  const room = Math.min(seats, Math.floor(span / NARROWEST_CUBE))
+  const wanted = [...everyone.filter(one => one.status === 'failed'), ...now.filter(isWorking), ...now.filter(one => !isWorking(one) && one.status !== 'failed').reverse()]
+  const seated = [...new Set(wanted)].slice(0, room).sort((a, b) => a.seat - b.seat)
+  const chosen = new Set(seated)
+  const farm = everyone.filter(one => !chosen.has(one))
+  const cube = Math.max(NARROWEST_CUBE, Math.min(WIDEST_CUBE, Math.floor(span / Math.max(1, seated.length))))
+  const capacity = Math.max(1, Math.floor(span / cube))
+  const slots = slotsOf(seated, capacity)
+
+  return { seated, farm, cube, first, span, capacity, slotOf: actor => slots.get(actor) ?? 0 }
+}
+
+const bossRoomWidth = (width: number): number => Math.max(44, Math.min(70, Math.round(width * 0.2)))
+
+type Line = { text: string; color: string }
+
+/** The stages of what is running, with how many of each are done. Agents with no run have none to list, and the bar already counts them. */
+const directoryLines = (office: Office, mostLines: number): Line[] => {
+  const groups = new Set(office.departments.map(department => department.group))
+
+  if (office.departments.length === 0 || (office.departments.length === 1 && office.departments[0]?.id === 'team')) {
+    return []
+  }
+
+  const nameOf = (department: Department): string => (groups.size > 1 ? `${department.group}: ${department.title}` : department.title)
+  const listed = groups.size > 1 ? office.departments.filter(department => department.state === 'now') : office.departments
+  const kept = listed.length <= mostLines ? listed : [...listed.filter(department => department.state === 'now'), ...listed.filter(department => department.state === 'past').reverse(), ...listed.filter(department => department.state === 'next')].slice(0, mostLines)
+
+  return kept.map(department => {
+    const finished = department.agents.filter(one => !isWorking(one)).length
+    const count = department.agents.length === 0 ? '' : ` ${finished}/${department.agents.length}`
+
+    return { text: `${nameOf(department)}${count}`.toUpperCase(), color: department.state === 'now' ? '#FBF236' : department.state === 'past' ? '#EEC39A' : '#8A8FA3' }
+  })
+}
+
+const directoryBox = (lines: readonly Line[], x: number, y: number, type: Type): Rect | null =>
+  lines.length === 0 ? null : { left: x, right: x + Math.max(...lines.map(line => type.width(line.text))) + 4, top: y, bottom: y + lines.length * (type.cap + 2) + 2 }
+
+/** Everything the band's layout turns on, worked out the same way to choose its scale as to draw it. */
+const bandPlan = (office: Office, width: number, height: number, type: Type, seats: number) => {
   const floor = height - CARPET
   const rim = height - RIM_TO_BOTTOM
   const bossX = width - bossRoomWidth(width)
   const first = COPIER_ROOM + 2
-  const row = frontRowOf(office, first, bossX)
-  const ceilingEnd = HUD_HEIGHT + 3
+  const row = frontRowOf(office, first, bossX, seats)
+  const ceilingEnd = type.bar + 3
+  const xOf = (actor: Actor): number => first + row.slotOf(actor) * row.cube
+  const inLine = row.seated.filter(one => isWorking(one) && one.atCopier)
+  const listed = directoryLines(office, Math.max(1, Math.floor((rim - 12 - ceilingEnd - 4) / (type.cap + 2))))
+  const directory = directoryBox(listed, 2, ceilingEnd + 2, type)
+  const failed = row.seated.filter(one => one.status === 'failed')
+  const speakers = [
+    ...row.seated
+      .filter(one => isWorking(one) || one.status === 'failed')
+      .map((actor): Speaker => {
+        const queued = inLine.indexOf(actor)
+
+        if (queued >= 0) {
+          return { actor, spot: { center: spotInQueue(queued, inLine.length) + SPRITE_WIDTH / 2, head: height - SPRITE_HEIGHT - 2 } }
+        }
+
+        // A failure's thought rises from over its cloud, and a waiting agent's from over its mark: it must hide neither.
+        return { actor, spot: { center: xOf(actor) + row.cube / 2, head: actor.status === 'failed' ? rim - 21 : actor.status === 'waiting' ? rim - 15 : rim - 9 } }
+      }),
+    ...(office.boss === null ? [] : [{ actor: office.boss, spot: { center: bossX + 14, head: floor - BOSS_HEIGHT - 1 } }]),
+  ]
+  const sky: Sky = {
+    base: rim - 11,
+    top: ceilingEnd + 1,
+    blocks: [...(directory === null ? [] : [directory]), ...failed.map(actor => cloudOver(xOf(actor), rim, row.cube))],
+  }
+
+  return { floor, rim, bossX, first, row, ceilingEnd, xOf, inLine, listed, directory, speakers, sky, ...placedIn(speakers, width, sky, type) }
+}
+
+/** The scale the band draws at: the largest that gives everyone a whole bubble and a proper cubicle, else whichever bubbles the most. */
+const bandScale = (office: Office, slot: number, seats: number): number => {
+  let best = BAND_SCALES[BAND_SCALES.length - 1] ?? 2
+  let most = -1
+
+  for (const scale of BAND_SCALES) {
+    const width = Math.max(NARROWEST, Math.floor(slot / scale))
+    const { row, bubbles, isEasy } = bandPlan(office, width, Math.floor(BAND_PIXELS / scale), typeAt(scale), seats)
+    const isRoomy = width >= 170 && row.seated.filter(one => isWorking(one) || one.status === 'failed').length * 12 <= row.span
+
+    if (isRoomy && isEasy) {
+      return scale
+    }
+
+    if (bubbles.length > most) {
+      best = scale
+      most = bubbles.length
+    }
+  }
+
+  return best
+}
+
+const bandOf = (office: Office, width: number, height: number, clock: number, cast: Cast): string => {
+  const { type } = cast
+  const { floor, rim, bossX, first, row, ceilingEnd, xOf, inLine, listed, directory, bubbles } = bandPlan(office, width, height, type, cast.seats)
   const windowTop = ceilingEnd + 2
   const windowHeight = Math.max(6, Math.min(16, rim - 28 - windowTop))
   const { done } = talliesOf(office)
-  const speakers = bandSpeakers(office, width, height, row, bossX)
-  const { tails, drawn } = drawBubbles(placed(speakers, width, bandRows(height)), rim - 11, cast)
-  const xOfActor = (actor: Actor): number => first + row.slotOf(actor) * row.cube
-  const queue = row.seated.filter(one => isWorking(one) && one.atCopier).map(actor => ({ actor, home: xOfActor(actor) }))
+
+  for (const actor of row.seated) {
+    cast.pin(actor, xOf(actor) + row.cube / 2, actor.status === 'failed' ? rim - 21 : actor.status === 'waiting' ? rim - 15 : isWorking(actor) ? rim - 10 : rim - 2)
+  }
+
+  const queue = inLine.map(actor => ({ actor, home: xOf(actor) }))
   const usedSlots = new Set(row.seated.map(row.slotOf))
   const cubes = [
     ...Array.from({ length: row.capacity }, (_, slot) => slot)
       .filter(slot => !usedSlots.has(slot))
-      .map(slot => cubeOf(first + slot * row.cube, rim, floor, row.cube, null)),
-    ...row.seated.map(actor => titled(actor, cubeOf(xOfActor(actor), rim, floor, row.cube, actor.status))),
+      .map(slot => cubeOf(first + slot * row.cube, rim, floor, row.cube, null, cast)),
+    ...row.seated.map(actor => hot(actor, cubeOf(xOf(actor), rim, floor, row.cube, actor, cast), cast)),
   ].join('')
-  const heads = row.seated.map(actor => titled(actor, headOf(actor, xOfActor(actor), rim, row.cube, cast))).join('')
-  const failures = row.seated.map(actor => (actor.status === 'failed' ? failureOf(xOfActor(actor), rim, row.cube) : '')).join('')
-  const returning = row.seated.map(actor => (isWorking(actor) && !actor.atCopier && actor.wasAtCopier ? returningOf(actor, xOfActor(actor), height, cast) : '')).join('')
+  const heads = row.seated.map(actor => hot(actor, headOf(actor, xOf(actor), rim, row.cube, cast), cast)).join('')
+  const failures = row.seated.map(actor => (actor.status === 'failed' ? failureOf(xOf(actor), rim, row.cube, cast) : '')).join('')
+  const returning = row.seated.map(actor => (isWorking(actor) && !actor.atCopier && actor.wasAtCopier ? returningOf(actor, xOf(actor), height, cast) : '')).join('')
   const flights = row.seated
     .filter(actor => actor.isFresh && actor.status === 'completed')
     .slice(0, MOST_FLIGHTS)
-    .map(actor => flightOf(xOfActor(actor) + 4, rim - 6, width - 16, floor - 16))
+    .map(actor => flightOf(xOf(actor) + 4, rim - 6, width - 16, floor - 16))
     .join('')
-  const isIdle = queue.length === 0 && height >= 90 && office.departments.length > 0
-  const reports = `${done} REPORTS`
+  const { tails, drawn } = drawBubbles(bubbles, cast)
+  // The copier's own complaint, where nothing else needs the wall.
+  const jam = { left: 3, right: 3 + type.width('PC LOAD LETTER') + 4, top: floor - 23 - type.bar, bottom: floor - 23 }
+  const isJammed =
+    queue.length === 0 &&
+    office.departments.length > 0 &&
+    jam.top > ceilingEnd + 2 &&
+    jam.right < bossX &&
+    (directory === null || !touches(jam, directory)) &&
+    bubbles.every(bubble => !touches(jam, boxOf(bubble))) &&
+    // Nor over anyone at a desk under it, or the cloud or mark over them.
+    row.seated.every(actor => xOf(actor) > jam.right + 1 || !(isWorking(actor) || actor.status === 'failed'))
 
   return [
     fill(WALL, rect(0, ceilingEnd, width, floor - ceilingEnd)),
-    ceilingOf(width, HUD_HEIGHT, 3, true),
+    ceilingOf(width, type.bar, 3, true),
     windowOf(first, windowTop, bossX - first - 4, windowHeight, clock),
     fill(WALL_SHADE, rect(0, rim - 3, bossX, 1)),
     farmOf(row.farm, first, bossX - 4, rim - 2, windowTop + windowHeight + 2),
@@ -875,9 +1172,10 @@ const bandOf = (office: Office, width: number, height: number, clock: number, ca
     bossRoomOf(office, bossX, ceilingEnd, floor, width - 1, done, clock, cast),
     copierOf(floor),
     failures,
-    done > 0 && textWidth(reports) + 7 <= bossRoomWidth(width) ? plateOf(bossX + 4, floor - 8, reports, '#FFFFFF', cast) : '',
-    isIdle ? plateOf(3, floor - 31, 'PC LOAD LETTER', '#99E550', cast) : '',
-    directoryOf(office, 2, ceilingEnd + 2, Math.max(1, Math.floor((rim - 12 - ceilingEnd - 4) / 7)), cast),
+    isJammed ? plateOf(jam.left, jam.top, 'PC LOAD LETTER', '#99E550', cast) : '',
+    directory === null
+      ? ''
+      : at(directory.left, directory.top, fill(INK, rect(0, 0, directory.right - directory.left, directory.bottom - directory.top)) + listed.map((line, i) => say(2, 2 + i * (type.cap + 2), line.text, line.color, cast)).join('')),
     queueOf(queue, height, cast),
     returning,
     tails,
@@ -892,28 +1190,128 @@ const bandOf = (office: Office, width: number, height: number, clock: number, ca
 
 const BOSS_FLOOR = 46
 const LOBBY = 16
-const PAST_FLOOR = 15
-const NEXT_FLOOR = 13
-const CUBE_ROW = 25
+// A desk, its agent behind it and a screen on it.
+const STATION = 27
+// From the floor a desk stands on to the top of its agent's head.
+const STATION_HEIGHT = 15
+// The strip of carpet a row of desks behind the front one stands on.
+const ROW_FLOOR = 3
 
-/** The whiteboard: a line for everyone working or failed, so nothing has to fit in a bubble. */
-const whiteboardOf = (agents: readonly Actor[], x: number, y: number, width: number, mostLines: number, cast: Cast): { body: string; height: number } => {
+/** What the screen on a desk shows: the same as a partition's strip, with room to draw it. Nine across and six down. */
+const screenOf = (actor: Actor, x: number, y: number, cast: Cast): string => {
+  const lit = (color: string): string => fill(color, rect(0, 0, 9, 6))
+  const screen = (kind: string, draw: () => string): string => cast.part(`screen-${kind}`, x, y, draw)
+
+  if (actor.status === 'completed') {
+    return screen('off', () => lit('#323C39')) + tickOf(x + 2, y + 1, cast)
+  }
+
+  if (actor.status === 'killed') {
+    return screen('stopped', () => lit('#323C39') + fill(OFF, rect(3, 2, 3, 2)))
+  }
+
+  if (actor.status === 'gone') {
+    return screen('off', () => lit('#323C39'))
+  }
+
+  if (actor.status === 'failed') {
+    return screen('failed', () => lit(RED) + fill('#FFFFFF', rect(3, 1, 1, 1) + rect(5, 1, 1, 1) + rect(4, 2, 1, 1) + rect(3, 3, 1, 1) + rect(5, 3, 1, 1)))
+  }
+
+  if (actor.status === 'waiting') {
+    return screen('waiting', () => {
+      const mark = fill(INK, rect(4, 1, 1, 2) + rect(4, 4, 1, 1))
+
+      return flipbook([lit('#FBF236') + mark, lit('#B8A800') + mark], 0.8)
+    })
+  }
+
+  if (actor.status === 'idle') {
+    return screen('idle', () => lit('#323C39') + fill('#DF7126', rect(7, 4, 1, 1)))
+  }
+
+  // At work: lines of something scrolling by, and under them how far it says it has got.
+  if (actor.percent === null) {
+    return screen('busy', () => lit('#3F3F74') + flipbook([fill('#CBDBFC', rect(1, 1, 4, 1) + rect(1, 3, 6, 1)), fill('#CBDBFC', rect(1, 1, 6, 1) + rect(1, 3, 3, 1))], 0.6))
+  }
+
+  return (
+    screen('counting', () => lit('#3F3F74') + flipbook([fill('#CBDBFC', rect(1, 1, 4, 1)), fill('#CBDBFC', rect(1, 1, 6, 1))], 0.6) + fill(INK, rect(0, 3, 9, 3))) +
+    fill('#9BDCF0', rect(x, y + 4, Math.max(1, Math.round((9 * actor.percent) / 100)), 2))
+  )
+}
+
+/** One desk: the agent behind it if it is in, its chair if it is not, and the screen that says how it stands. */
+const stationOf = (actor: Actor, x: number, ground: number, cast: Cast): string => {
+  const isFailed = actor.status === 'failed'
+  const isIn = isFailed || (isWorking(actor) && !actor.atCopier)
+  // Its chair, which shows once it has got up: a back, a seat, and a foot under the desk.
+  const chair = (left: number, floor: number): string =>
+    cast.part(
+      'chair',
+      left,
+      floor,
+      () => fill('#45283C', rect(5, -11, 6, 5) + rect(7, -6, 2, 1) + rect(4, -5, 8, 1) + rect(7, -2, 2, 1) + rect(5, -1, 6, 1)) + fill('#663931', rect(6, -10, 4, 3)),
+    )
+  const desk = (left: number, floor: number): string =>
+    cast.part(
+      'desk',
+      left,
+      floor,
+      () => fill('#D9A066', rect(0, -3, STATION - 1, 1)) + fill('#8F563B', rect(0, -2, 1, 2) + rect(STATION - 2, -2, 1, 2)) + fill(INK, rect(14, -12, 11, 8) + rect(18, -4, 3, 1)),
+    )
+
+  cast.pin(actor, x + 7, isIn ? ground - 14 : ground - 12)
+
+  // A finished desk is the same as every other finished desk: in a big run there are hundreds.
+  if (actor.status === 'completed') {
+    return hot(actor, cast.part('desk-done', x, ground, () => chair(0, 0) + desk(0, 0) + screenOf(actor, 15, -11, cast)), cast)
+  }
+
+  return hot(
+    actor,
+    chair(x, ground) +
+      (isIn ? personOf(actor, x + 1, ground - SPRITE_HEIGHT, cast) : '') +
+      desk(x, ground) +
+      screenOf(actor, x + 15, ground - 11, cast) +
+      // Rain indoors, on the screen that says why, and the red stapler on top of it.
+      (isFailed ? cast.part('rain', x + 14, ground - 23, raining) + fill(RED, rect(x + 17, ground - 14, 6, 1)) + fill(INK, rect(x + 17, ground - 13, 6, 1)) : ''),
+    cast,
+  )
+}
+
+/** As many whole words of the text as fit in this many of the art's pixels. */
+const fitted = (text: string, room: number, type: Type): string => {
+  const words = text.split(' ')
+
+  while (words.length > 1 && type.width(words.join(' ')) > room) {
+    words.pop()
+  }
+
+  return words.join(' ')
+}
+
+/** A short list on the wall: a line for each of these agents. */
+const listOf = (agents: readonly Actor[], x: number, y: number, width: number, mostLines: number, cast: Cast): { body: string; height: number } => {
   if (agents.length === 0 || mostLines < 1) {
     return { body: '', height: 0 }
   }
 
+  const { type } = cast
   const lines = agents.length <= mostLines ? agents : agents.slice(0, mostLines - 1)
   const rest = agents.length - lines.length
-  const height = (lines.length + (rest > 0 ? 1 : 0)) * 6 + 4
+  const height = (lines.length + (rest > 0 ? 1 : 0)) * type.line + 4
   const writing = lines
     .map((actor, i) => {
-      const said = actor.thought === actor.label || actor.thought === '' ? actor.label : actor.thought
-      const words = actor.words.replaceAll('~', '')
-      const text = (said.length + words.length + 3) * 4 < width - 12 && words !== '' ? `${said} · ${words}` : said
+      const said = tidy(actor.thought === actor.label || actor.thought === '' ? actor.label : actor.thought)
+      const text = actor.words !== '' && type.width(`${said} · ${actor.words}`) < width - 12 ? `${said} · ${actor.words}` : fitted(said, width - 12, type)
 
-      return titled(
+      cast.pin(actor, x + Math.min(width, type.width(text) + 12) / 2, y + 2 + i * type.line)
+
+      return hot(
         actor,
-        fill(actor.status === 'failed' ? RED : tunicOf(actor), rect(3, 2 + i * 6 + 1, 4, 3)) + say(9, 3 + i * 6, text.toUpperCase().replace(/…|\.{2,}/g, ' '), actor.status === 'failed' ? '#AC3232' : INK, cast),
+        fill(actor.status === 'failed' ? RED : tunicOf(actor), rect(3, 3 + i * type.line, 4, type.cap - 1)) + say(9, 3 + i * type.line, text, actor.status === 'failed' ? '#AC3232' : INK, cast),
+        cast,
       )
     })
     .join('')
@@ -923,167 +1321,464 @@ const whiteboardOf = (agents: readonly Actor[], x: number, y: number, width: num
     body: at(
       x,
       y,
-      fill('#847E87', rect(0, 0, width, height)) +
-        fill('#F4F3EC', rect(1, 1, width - 2, height - 2)) +
-        writing +
-        (rest > 0 ? say(9, 3 + lines.length * 6, `+${rest} MORE WORKING`, '#595652', cast) : ''),
+      fill('#847E87', rect(0, 0, width, height)) + fill('#F4F3EC', rect(1, 1, width - 2, height - 2)) + writing + (rest > 0 ? say(9, 3 + lines.length * type.line, `+${rest} more`, '#595652', cast) : ''),
     ),
   }
 }
 
-const floorOf = (department: Department, y: number, height: number, width: number, boss: { x: number; y: number }, clock: number, cast: Cast): string => {
-  const isNow = department.state === 'now'
+/** The sign and what is under the ceiling, down to where a floor's desks can start. */
+const headerOf = (type: Type): number => 4 + type.bar + 3
+
+/** From one row of desks to the one behind it: the desks, a line of bubbles over them, and the strip they stand on. */
+const rowPitch = (type: Type): number => type.line + 7 + STATION_HEIGHT + ROW_FLOOR
+
+// The carpet in front of a floor's desks, deep enough for the line at the copier to stand clear of them.
+const FRONT = 15
+
+const seatsAcross = (width: number): number => Math.max(1, Math.floor((width - COPIER_ROOM - 4) / STATION))
+
+const OPEN_PLAN: Department = { id: 'team', group: '', title: 'OPEN PLAN', detail: '', state: 'next', agents: [], says: '' }
+
+type Plan = {
+  department: Department
+  height: number
+  /** Rows of desks, for a stage that is under way. */
+  rows: number
+  /** From one row of desks to the one behind it, which past what the desks need is room for their bubbles. */
+  pitch: number
+  /** How deep the strip of tiny cubicles under its sign is: nothing, if everyone has a desk. */
+  farm: number
+  /** How deep the carpet in front of its desks is. */
+  front: number
+  seated: Actor[]
+  /** Those it has no desk for, who go in the tiny cubicles. */
+  behind: Actor[]
+}
+
+type Tower = {
+  plans: Plan[]
+  lobby: number
+  /** Everyone under way has a desk, with nothing given up. This is what the scale is chosen by. */
+  isWhole: boolean
+  /** Its floors all stand inside the pane. */
+  fits: boolean
+}
+
+// How much a building too tall for its pane gives up, the least first: what its finished stages show, then the stages
+// themselves but the last, then the room over its desks for bubbles.
+const MOST_SQUEEZE = 3
+const MOST_FARM_ROWS = 12
+
+const pastHeight = (one: Department, width: number, type: Type): number => {
+  const rows = Math.ceil(one.agents.filter(agent => agent.status !== 'failed').length / Math.max(1, Math.floor((width - 8) / 4)))
+  const failed = Math.min(2, one.agents.filter(agent => agent.status === 'failed').length)
+
+  return Math.min(60, headerOf(type) + rows * 3 + 2 + (failed > 0 ? failed * type.line + 6 : 0))
+}
+
+/** How deep a strip of tiny cubicles has to be for this many, three pixels to a row. */
+const farmDepth = (count: number, width: number): number =>
+  count <= 0 ? 0 : Math.min(MOST_FARM_ROWS, Math.ceil(count / Math.max(1, Math.floor((width - COPIER_ROOM - 6) / 3)))) * 3 + 2
+
+/**
+ * How the building is cut into floors: a stage under way gets as many rows of desks as it has agents for, and what
+ * is left over goes to its walls. `seats` is the most desks the drawing has room for in all, and `squeeze` how much
+ * the building gives up to stand inside its pane.
+ */
+const towerPlan = (office: Office, width: number, height: number, type: Type, seats: number, squeeze: number): Tower => {
+  const all: readonly Department[] = office.departments.length > 0 ? office.departments : [OPEN_PLAN]
+  const header = headerOf(type)
+  const lastPast = all.findLast(one => one.state === 'past')
+  // How tall a floor with nobody at work on it stands. Nothing, once it is squeezed out.
+  const stillOf = (one: Department): number => {
+    if (one.state === 'past') {
+      return squeeze === 0 ? pastHeight(one, width, type) : squeeze === 1 || (squeeze === 2 && one === lastPast) ? header : 0
+    }
+
+    return squeeze < 2 ? header : 0
+  }
+  const shown = all.filter(one => one.state === 'now' || stillOf(one) > 0)
+  const perRow = seatsAcross(width)
+  // Squeezed all the way, the rows stand as close as desks can, and only the back row has a wall for bubbles.
+  const pitch = squeeze >= MOST_SQUEEZE ? STATION_HEIGHT + ROW_FLOOR + 2 : rowPitch(type)
+  // And the line at the copier stands in among the desks.
+  const front = squeeze >= MOST_SQUEEZE ? CARPET : FRONT
+  const live = shown.filter(one => one.state === 'now')
+  const still = shown.reduce((sum, one) => sum + (one.state === 'now' ? 0 : stillOf(one)), 0)
+  // The desks each floor under way may have: one for each agent, up to its share of what the drawing has room for.
+  const share = Math.max(1, Math.floor(seats / Math.max(1, live.length)))
+  const desks = live.map(one => Math.min(one.agents.length, share))
+  const wanted = desks.map(count => Math.max(1, Math.ceil(count / perRow)))
+  const room = height - type.bar - BOSS_FLOOR
+  const total = (rows: readonly number[]): number => rows.reduce((sum, count) => sum + count, 0)
+  const farmFor = (i: number, count: number): number => farmDepth((live[i]?.agents.length ?? 0) - Math.min(desks[i] ?? 0, count * perRow), width)
+  const needOf = (rows: readonly number[]): number =>
+    still + live.length * (header - ROW_FLOOR + front) + total(rows) * pitch + rows.reduce((sum, count, i) => sum + farmFor(i, count), 0)
+  const rows = [...wanted]
+  // A pane too short for it all loses the entrance before it loses a desk.
+  const lobby = needOf(rows) + LOBBY <= room ? LOBBY : 0
+
+  while (needOf(rows) + lobby > room && rows.some(count => count > 1)) {
+    const widest = rows.indexOf(Math.max(...rows))
+
+    rows[widest] = (rows[widest] ?? 1) - 1
+  }
+
+  const used = needOf(rows)
+  const fits = used + lobby <= room
+  const spare = Math.max(0, room - lobby - used)
+  const shares = live.length > 0 ? live.length : shown.length
+
+  return {
+    lobby,
+    fits,
+    isWhole: squeeze === 0 && fits && lobby === LOBBY && rows.every((count, i) => count === wanted[i]) && desks.every((count, i) => count === live[i]?.agents.length),
+    plans: shown.map(department => {
+      const i = live.indexOf(department)
+      const extra = (live.length === 0 || i >= 0) && shares > 0 ? Math.floor(spare / shares) : 0
+
+      if (i < 0) {
+        return { department, height: stillOf(department) + extra, rows: 0, pitch: 0, farm: 0, front: 0, seated: [], behind: [] }
+      }
+
+      const count = rows[i] ?? 1
+      const bad = department.agents.filter(one => one.status === 'failed')
+      const working = department.agents.filter(isWorking)
+      const finished = department.agents.filter(one => !isWorking(one) && one.status !== 'failed')
+      const seated = [...bad, ...working.filter(one => one.status === 'waiting'), ...working.filter(one => one.status !== 'waiting'), ...finished.slice().reverse()]
+        .slice(0, Math.min(desks[i] ?? 0, count * perRow))
+        .sort((one, other) => one.seat - other.seat)
+      const chosen = new Set(seated)
+      const farm = farmFor(i, count)
+
+      return {
+        department,
+        height: header - ROW_FLOOR + front + count * pitch + farm + extra,
+        rows: count,
+        // What is spare goes to the rows first, up to two more lines of bubbles over each, and the rest to the wall.
+        pitch: pitch + Math.min(2 * (type.line + 3 + BUBBLE_GAP), Math.floor(extra / count)),
+        farm,
+        front,
+        seated,
+        behind: department.agents.filter(one => !chosen.has(one)),
+      }
+    }),
+  }
+}
+
+const signOf = (department: Department): string => {
   const count = department.agents.length === 0 ? '' : ` ${department.agents.filter(one => !isWorking(one)).length}/${department.agents.length}`
-  const name = `${department.id === 'team' ? 'AGENTS' : department.title}${count}`
-  const wall = isNow ? WALL : department.state === 'past' ? '#9E9987' : '#5F5C52'
-  const ground = y + height - CARPET
-  const head = fill(wall, rect(0, y, width, height)) + ceilingOf(width, y, 3, isNow) + fill(CARPET_EDGE, rect(0, y + height - 1, width, 1))
-  const plate = plateOf(2, y + 4, name, isNow ? '#FBF236' : department.state === 'past' ? '#EEC39A' : '#8A8FA3', cast)
 
-  if (department.state === 'next') {
-    return head + plate
-  }
+  return `${department.id === 'team' && department.agents.length > 0 ? 'AGENTS' : department.title}${count}`
+}
 
-  const bad = department.agents.filter(one => one.status === 'failed')
+/** Where everything on a floor under way stands, and who gets a bubble: worked out the same way to choose the scale as to draw it. */
+const liveLayout = (plan: Plan, y: number, width: number, type: Type, isUsual: boolean) => {
+  const { seated, rows } = plan
+  const perRow = seatsAcross(width)
+  const { pitch } = plan
+  const first = COPIER_ROOM + 2
+  const bottom = y + plan.height
+  const ground = bottom - plan.front
+  const groundOf = (row: number): number => ground - row * pitch
+  // Whose thought it is and how it stands is all a bubble's place turns on once the thought is the usual one.
+  const speaking = (actor: Actor): Actor => (isUsual ? { ...actor, thought: USUAL_THOUGHT } : actor)
+  const seats = new Map(seated.map((actor, i) => [actor, { x: first + (i % perRow) * STATION, row: Math.floor(i / perRow) }]))
+  const seatOf = (actor: Actor): { x: number; row: number } => seats.get(actor) ?? { x: first, row: 0 }
+  const wallTop = y + headerOf(type) + plan.farm
+  const skyBase = (row: number): number => groundOf(row) - STATION_HEIGHT - 2
+  const inLine = seated.filter(one => isWorking(one) && one.atCopier)
+  const talk = Array.from({ length: rows }, (_, row) => {
+    const here = seated.filter(one => seatOf(one).row === row)
+    const at = groundOf(row)
+    const speakers = [
+      ...here
+        .filter(one => one.status === 'failed' || (isWorking(one) && !one.atCopier))
+        // A waiting agent's thought rises from over its mark, which it must not hide.
+        .map((actor): Speaker => ({ actor: speaking(actor), spot: { center: seatOf(actor).x + 7, head: at - STATION_HEIGHT + (actor.status === 'waiting' ? -5 : 1) } })),
+      ...(row === 0 ? inLine.map((actor, i): Speaker => ({ actor: speaking(actor), spot: { center: spotInQueue(i, inLine.length) + SPRITE_WIDTH / 2, head: bottom - SPRITE_HEIGHT - 2 } })) : []),
+    ]
+    const sky: Sky = {
+      base: skyBase(row),
+      top: row === rows - 1 ? wallTop + 1 : groundOf(row + 1) + ROW_FLOOR + 1,
+      // The rain over a failure's screen.
+      blocks: here.filter(one => one.status === 'failed').map(actor => ({ left: seatOf(actor).x + 14, right: seatOf(actor).x + 25, top: at - 23, bottom: at - 15 })),
+    }
 
-  if (!isNow) {
-    const board = whiteboardOf(bad, 2, y + 13, width - 4, 2, cast)
+    return { here, at, speakers, ...placedIn(speakers, width, sky, type) }
+  })
 
-    return head + plate + farmOf(department.agents.filter(one => one.status !== 'failed'), 4, width - 4, y + height - 2, y + 13 + board.height + 1) + board.body
-  }
+  return { perRow, first, bottom, ground, groundOf, seatOf, wallTop, skyBase, inLine, talk }
+}
 
+/** A stage under way: its agents at their desks, as many rows of them as it takes, with their thoughts over them. */
+const liveFloorOf = (plan: Plan, y: number, width: number, pile: { x: number; y: number }, clock: number, cast: Cast): { body: string; flights: string } => {
+  const { department, seated, behind, rows } = plan
+  const { type } = cast
+  const { perRow, first, bottom, ground, groundOf, seatOf, wallTop, skyBase, inLine, talk } = liveLayout(plan, y, width, type, false)
+  const name = signOf(department)
+  const signEnd = 2 + type.width(name) + 4
   const detail = department.detail.toUpperCase()
-  const titleWidth = textWidth(name) + 5
-  const detailFits = detail !== '' && titleWidth + 6 + textWidth(detail) < width - 2
-  const textTop = y + 4
-  const working = department.agents.filter(isWorking)
-  const finished = department.agents.filter(one => !isWorking(one) && one.status !== 'failed')
-  const boardTop = y + 13
-  const room = ground - boardTop
-  const perRow = Math.max(1, Math.floor((width - COPIER_ROOM - 4) / WIDEST_CUBE))
-  // The whiteboard takes what it needs, leaving a row of cubicles at the least.
-  const mostLines = Math.max(1, Math.floor((room - CUBE_ROW - 5) / 6))
-  const board = whiteboardOf([...bad, ...working], 2, boardTop, width - 4, mostLines, cast)
-  const rowsFit = Math.max(1, Math.floor((room - board.height - 2) / CUBE_ROW))
-  const wanted = [...bad, ...working, ...finished.slice().reverse()]
-  // A floor of cubicles, full whoever is in. Past what it holds, one row gives way to the tiny ones behind.
-  const rowCount = wanted.length > rowsFit * perRow && rowsFit > 1 ? rowsFit - 1 : rowsFit
-  const cells = rowCount * perRow
-  const seated = wanted.slice(0, cells).sort((one, other) => one.seat - other.seat)
-  const slots = slotsOf(seated, cells)
-  const seatedSet = new Set(seated)
-  const behind = department.agents.filter(one => !seatedSet.has(one))
-  const rimOf = (slot: number): number => ground - (rowCount - 1 - Math.floor(slot / perRow)) * CUBE_ROW - 16
-  const xOfSlot = (slot: number): number => COPIER_ROOM + 2 + (slot % perRow) * WIDEST_CUBE
-  const sitting = new Map([...slots].map(([actor, slot]) => [slot, actor]))
-  const body = Array.from({ length: cells }, (_, slot) => {
-    const actor = sitting.get(slot)
-    const x = xOfSlot(slot)
-    const rim = rimOf(slot)
-    const bottom = rim + 15
+  const detailFits = detail !== '' && signEnd + 2 + type.width(detail) + 4 < width - 2
+  // The wall over the back row, above its first line of bubbles: where a window goes when there is one to spare.
+  const wall = skyBase(rows - 1) - type.line - 5 - wallTop
+  let body = ''
+  let tails = ''
+  let said = ''
 
-    return actor === undefined
-      ? cubeOf(x, rim, bottom, WIDEST_CUBE, null)
-      : titled(actor, headOf({ ...actor, wasAtCopier: false }, x, rim, WIDEST_CUBE, cast) + cubeOf(x, rim, bottom, WIDEST_CUBE, actor.status) + (actor.status === 'failed' ? failureOf(x, rim, WIDEST_CUBE) : ''))
-  }).join('')
-  const queue = seated.filter(one => isWorking(one) && one.atCopier).map(actor => ({ actor: { ...actor, wasAtCopier: true }, home: xOfSlot(slots.get(actor) ?? 0) }))
+  for (const { here, at, bubbles } of [...talk].reverse()) {
+    if (at !== ground) {
+      body += fill(CARPET_EDGE, rect(first - 2, at, width - first, 1)) + fill(CARPET_COLOR, rect(first - 2, at + 1, width - first, ROW_FLOOR - 1))
+    }
+
+    body += here.map(actor => stationOf(actor, seatOf(actor).x, at, cast)).join('')
+
+    const drawn = drawBubbles(bubbles, cast)
+
+    tails += drawn.tails
+    said += drawn.drawn
+  }
+
+  const inFront = Math.min(seated.length, perRow)
   const flights = seated
     .filter(actor => actor.isFresh && actor.status === 'completed')
     .slice(0, MOST_FLIGHTS)
-    .map(actor => flightOf(xOfSlot(slots.get(actor) ?? 0) + 4, rimOf(slots.get(actor) ?? 0) - 6, boss.x, boss.y))
+    .map(actor => flightOf(seatOf(actor).x + 4, groundOf(seatOf(actor).row) - 12, pile.x, pile.y))
     .join('')
 
+  return {
+    flights,
+    body:
+      fill(WALL, rect(0, y, width, plan.height)) +
+      ceilingOf(width, y, 3, true) +
+      fill(CARPET_EDGE, rect(0, bottom - 1, width, 1)) +
+      (wall >= 12
+        ? windowOf(first, wallTop + 3, width - first - 4, Math.min(26, wall - 4), clock)
+        : windowOf(signEnd + 4, y + 5, Math.max(6, width - signEnd - 8), type.bar - 2, clock)) +
+      plateOf(2, y + 4, name, '#FBF236', cast) +
+      (detailFits ? plateOf(signEnd + 2, y + 4, detail, '#FFFFFF', cast) : '') +
+      farmOf(behind, first, width - 4, wallTop - 1, y + headerOf(type)) +
+      carpetOf(width, ground, plan.front) +
+      body +
+      // Something green where a desk would be, if the front row has the room.
+      (inFront < perRow ? at(first + inFront * STATION + 9, ground - 9, cast.sprite('plant', PLANT)) : '') +
+      copierOf(ground) +
+      queueOf(inLine.map(actor => ({ actor: { ...actor, wasAtCopier: true }, home: seatOf(actor).x })), bottom, cast) +
+      tails +
+      said,
+  }
+}
+
+/** A stage that is over, or has yet to start: a strip with its sign, the lights off, and a mark for each agent it had. */
+const stillFloorOf = (plan: Plan, y: number, width: number, cast: Cast): string => {
+  const { department, height } = plan
+  const isPast = department.state === 'past'
+  const top = y + headerOf(cast.type) - 1
+  // Squeezed down to its sign, it has no wall to show anything on.
+  const hasWall = isPast && height > headerOf(cast.type)
+  const board = hasWall ? listOf(department.agents.filter(one => one.status === 'failed'), 2, top, width - 4, 2, cast) : { body: '', height: 0 }
+
   return (
-    head +
-    windowOf(titleWidth + 8, textTop, Math.max(6, width - titleWidth - 12), 6, clock) +
-    plate +
-    (detailFits ? plateOf(titleWidth + 6, textTop, detail, '#FFFFFF', cast) : '') +
-    farmOf(behind, COPIER_ROOM + 2, width - 4, rimOf(0) - 12, boardTop + board.height + 1) +
-    board.body +
-    body +
-    carpetOf(width, ground, CARPET) +
-    copierOf(ground) +
-    queueOf(queue, ground + CARPET - 1, cast) +
-    flights
+    fill(isPast ? '#9E9987' : '#5F5C52', rect(0, y, width, height)) +
+    ceilingOf(width, y, 3, false) +
+    fill(CARPET_EDGE, rect(0, y + height - 1, width, 1)) +
+    plateOf(2, y + 4, signOf(department), isPast ? '#EEC39A' : '#8A8FA3', cast) +
+    (hasWall ? farmOf(department.agents.filter(one => one.status !== 'failed'), 4, width - 4, y + height - 2, top + board.height + 1) : '') +
+    board.body
   )
 }
 
+/** The boss thinks out over its own floor, which has the wall for it. */
+const bossThought = (boss: Actor | null, width: number, type: Type): { bubbles: Bubble[]; isEasy: boolean } => {
+  const floor = type.bar + BOSS_FLOOR - 1
+
+  return boss === null
+    ? { bubbles: [], isEasy: true }
+    : placedIn([{ actor: boss, spot: { center: Math.round(width * 0.45) + 14, head: floor - BOSS_HEIGHT - 1 } }], width, { base: floor - BOSS_HEIGHT - 2, top: type.bar + 4, blocks: [] }, type)
+}
+
 const towerOf = (office: Office, width: number, height: number, clock: number, cast: Cast): string => {
+  const { type } = cast
   const { done } = talliesOf(office)
-  const lobbyTop = height - LOBBY
-  const floorsTop = HUD_HEIGHT + BOSS_FLOOR
-  const room = lobbyTop - floorsTop
-  const shown: readonly Department[] = office.departments.length > 0
-    ? office.departments
-    : [{ id: 'team', group: '', title: 'OPEN PLAN', detail: '', state: 'next', agents: [], says: '' }]
-  const pastHeight = (one: Department): number => {
-    const rows = Math.ceil(one.agents.length / Math.max(1, Math.floor((width - 8) / 4)))
-    const failed = one.agents.some(agent => agent.status === 'failed') ? 16 : 0
-
-    return Math.min(44, PAST_FLOOR + rows * 3 + failed)
-  }
-  const fixed = shown.reduce((sum, one) => sum + (one.state === 'past' ? pastHeight(one) : one.state === 'next' ? NEXT_FLOOR : 0), 0)
-  const live = shown.filter(one => one.state === 'now').length
-  const liveHeight = live > 0 ? Math.max(CUBE_ROW + 22, Math.floor((room - fixed) / live)) : 0
-  const spare = live === 0 ? Math.floor(Math.max(0, room - fixed) / shown.length) : 0
-  const pileAt = { x: width - 18, y: HUD_HEIGHT + BOSS_FLOOR - 26 }
-  const reports = `${done} REPORTS`
-  let y = floorsTop
+  const { plans, lobby } = towerPlan(office, width, height, type, cast.seats, cast.squeeze)
+  const bossX = Math.round(width * 0.45)
+  const bossFloor = type.bar + BOSS_FLOOR - 1
+  const pile = { x: width - 18, y: bossFloor - 25 }
+  const lobbyTop = height - lobby
+  const middle = Math.round(width / 2)
+  let y = type.bar + BOSS_FLOOR
   let floors = ''
+  let flights = ''
 
-  shown.forEach(one => {
-    const each = (one.state === 'now' ? liveHeight : one.state === 'past' ? pastHeight(one) : NEXT_FLOOR) + spare
+  for (const plan of plans) {
+    if (plan.department.state === 'now') {
+      const live = liveFloorOf(plan, y, width, pile, clock, cast)
 
-    floors += floorOf(one, y, each, width, pileAt, clock, cast)
-    y += each
-  })
+      floors += live.body
+      flights += live.flights
+    } else {
+      floors += stillFloorOf(plan, y, width, cast)
+    }
 
-  const bossThought = office.boss === null || office.boss.thought === '' ? '' : `${office.boss.thought}${office.boss.words === '' ? '' : ` · ${office.boss.words}`}`.toUpperCase().replaceAll('~', '').replace(/…|\.{2,}/g, ' ')
+    y += plan.height
+  }
+
+  const thought = drawBubbles(bossThought(office.boss, width, type).bubbles, cast)
 
   return [
-    fill(WALL, rect(0, HUD_HEIGHT, width, height - HUD_HEIGHT)),
-    ceilingOf(width, HUD_HEIGHT, 3, true),
-    bossRoomOf(office, Math.round(width * 0.45), HUD_HEIGHT + 3, HUD_HEIGHT + BOSS_FLOOR - 1, width, done, clock, cast),
-    fill(CARPET_EDGE, rect(0, HUD_HEIGHT + BOSS_FLOOR - 1, width, 1)),
-    done > 0 ? plateOf(Math.round(width * 0.45) + 4, HUD_HEIGHT + BOSS_FLOOR - 9, reports, '#FFFFFF', cast) : '',
-    bossThought !== '' && textWidth(bossThought) + 10 < width ? plateOf(3, HUD_HEIGHT + 5, bossThought, '#FFFFFF', cast) : '',
-    office.isParty ? at(width - 12, HUD_HEIGHT + BOSS_FLOOR - 28, confetti()) : '',
+    fill(WALL, rect(0, type.bar, width, height - type.bar)),
+    ceilingOf(width, type.bar, 3, true),
+    bossRoomOf(office, bossX, type.bar + 3, bossFloor, width, done, clock, cast),
+    fill(CARPET_EDGE, rect(0, bossFloor, width, 1)),
+    thought.tails,
+    thought.drawn,
     floors,
     // The lobby, under it all. Whatever room the floors left goes to the entrance.
     fill(WALL_SHADE, rect(0, y, width, Math.max(0, lobbyTop - y))),
-    fill('#8F563B', rect(0, lobbyTop, width, LOBBY)) +
-      fill('#663931', rect(0, lobbyTop, width, 1)) +
-      fill(INK, rect(Math.round(width / 2) - 9, lobbyTop + 2, 18, LOBBY - 2)) +
-      fill(GLASS, rect(Math.round(width / 2) - 8, lobbyTop + 3, 7, LOBBY - 3) + rect(Math.round(width / 2) + 1, lobbyTop + 3, 7, LOBBY - 3)) +
-      fill('#37946E', rect(8, lobbyTop + 4, 6, 6)) +
-      fill('#663931', rect(9, lobbyTop + 10, 4, 4)),
+    lobby === 0
+      ? ''
+      : fill('#8F563B', rect(0, lobbyTop, width, lobby)) +
+        fill('#663931', rect(0, lobbyTop, width, 1)) +
+        fill(INK, rect(middle - 9, lobbyTop + 2, 18, lobby - 2)) +
+        fill(GLASS, rect(middle - 8, lobbyTop + 3, 7, lobby - 3) + rect(middle + 1, lobbyTop + 3, 7, lobby - 3)) +
+        at(7, lobbyTop + 5, cast.sprite('plant', PLANT)),
+    flights,
+    office.isParty ? at(width - 12, bossFloor - 27, confetti()) : '',
     hudOf(office, width, cast),
   ].join('')
 }
 
-/** The office, all of it: one SVG document, and the size in pixels to give its frame, which is 300 by 150 when given none. */
-export const sceneOf = (office: Office, stage: Stage): { source: string; width: number; height: number } => {
+// A thought of the usual length. It stands in for everyone's when choosing how close to draw the building, so the view
+// does not jump each time someone thinks something longer: it changes only when agents come, go or change how they stand.
+const USUAL_THOUGHT = 'Reading the session'
+// The art is never drawn shorter than this.
+const SHORTEST = 120
+
+/**
+ * How well the building holds everyone at a size: 3 with a desk for all and a whole bubble for all, 2 with bubbles
+ * cut down to fit, 1 with desks but not a bubble each, and 0 without a desk for all.
+ */
+const towerFit = (office: Office, width: number, height: number, type: Type, seats: number): number => {
+  const { plans, isWhole } = towerPlan(office, width, height, type, seats, 0)
+
+  if (!isWhole) {
+    return 0
+  }
+
+  const boss = bossThought(office.boss === null ? null : { ...office.boss, thought: USUAL_THOUGHT }, width, type)
+  let y = type.bar + BOSS_FLOOR
+  let isTold = office.boss === null || boss.bubbles.length === 1
+  let { isEasy } = boss
+
+  for (const plan of plans) {
+    if (plan.department.state === 'now') {
+      for (const row of liveLayout(plan, y, width, type, true).talk) {
+        isTold = isTold && row.bubbles.length === row.speakers.length
+        isEasy = isEasy && row.isEasy
+      }
+    }
+
+    y += plan.height
+  }
+
+  return isTold ? (isEasy ? 3 : 2) : 1
+}
+
+/**
+ * How the building is drawn: at the largest scale that gives everyone under way a desk and a bubble, or one step
+ * further out if that lets every bubble say all it would; else the largest that gives everyone a desk. With no scale
+ * that seats everyone, it is the furthest view, giving up only as much as lets its floors stand inside the pane.
+ */
+const towerView = (office: Office, slot: number, pixels: number, seats: number): { scale: number; squeeze: number } => {
+  const least = TOWER_SCALES[TOWER_SCALES.length - 1] ?? 2
+  const sizeAt = (scale: number): { width: number; height: number } => ({ width: Math.max(NARROWEST, Math.floor(slot / scale)), height: Math.max(SHORTEST, Math.floor(pixels / scale)) })
+  // A scale the pane is too small for would be drawn larger than the pane.
+  const fits = TOWER_SCALES.filter(scale => Math.floor(slot / scale) >= NARROWEST && Math.floor(pixels / scale) >= SHORTEST).map(scale => ({
+    scale,
+    fit: towerFit(office, sizeAt(scale).width, sizeAt(scale).height, typeAt(scale), seats),
+  }))
+  const told = fits.findIndex(one => one.fit >= 2)
+  const best = told >= 0 ? (fits[told]?.fit !== 3 && fits[told + 1]?.fit === 3 ? fits[told + 1] : fits[told]) : fits.find(one => one.fit === 1)
+
+  if (best !== undefined) {
+    return { scale: best.scale, squeeze: 0 }
+  }
+
+  const { width, height } = sizeAt(least)
+  const squeezes = Array.from({ length: MOST_SQUEEZE + 1 }, (_, squeeze) => squeeze)
+
+  return { scale: least, squeeze: squeezes.find(squeeze => towerPlan(office, width, height, typeAt(least), seats, squeeze).fits) ?? MOST_SQUEEZE }
+}
+
+/** What a drawing gives up to be small enough for a surface to take. */
+type Limits = {
+  /** Agents whose cards are left out. They say it in the surface's own tooltip instead. */
+  cardless: ReadonlySet<string>
+  /** The most agents drawn at a desk of their own. The rest go in the tiny cubicles. */
+  seats: number
+}
+
+type Drawing = { source: string; width: number; height: number; cards: { id: string; size: number; urgency: number }[]; seated: number }
+
+const drawnOf = (office: Office, stage: Stage, { cardless, seats }: Limits): Drawing => {
   const slot = stage.columns * CELL_WIDTH
+  const pixels = (stage.rows ?? 0) * CELL_HEIGHT
+  const { scale, squeeze } = stage.rows === undefined ? { scale: bandScale(office, slot, seats), squeeze: 0 } : towerView(office, slot, pixels, seats)
   const defs = new Map<string, string>()
+  const marks = new Map<string, number>()
+  const pins = new Map<string, { actor: Actor; x: number; y: number }>()
   const cast: Cast = {
+    type: typeAt(scale),
+    seats,
+    squeeze,
     sprite: (id, grid) => {
-      defs.set(id, `<g id="${id}">${paint(grid)}</g>`)
+      if (!defs.has(id)) {
+        defs.set(id, `<g id="${id}">${paint(grid)}</g>`)
+      }
 
       return `<use href="#${id}"/>`
     },
     glyph: char => {
       const id = `g${char.codePointAt(0)}`
 
-      defs.set(id, `<path id="${id}" fill="currentColor" d="${[...(GLYPHS[char] ?? [])].map((row, y) => [...row].map((cell, x) => (cell === 'k' ? rect(x, y, 1, 1) : '')).join('')).join('')}"/>`)
+      if (!defs.has(id)) {
+        const d = (GLYPHS[char] ?? []).map((row, y) => [...row.matchAll(/#+/g)].map(run => rect(run.index ?? 0, y, run[0].length, 1)).join('')).join('')
+
+        defs.set(id, `<path id="${id}" fill="currentColor" d="${d}"/>`)
+      }
 
       return id
     },
+    part: (id, x, y, draw) => {
+      if (!defs.has(id)) {
+        defs.set(id, `<g id="${id}">${draw()}</g>`)
+      }
+
+      return `<use href="#${id}" x="${x}" y="${y}"/>`
+    },
+    mark: actor => {
+      const known = marks.get(actor.id) ?? marks.size
+
+      marks.set(actor.id, known)
+
+      return known
+    },
+    isMarked: actor => marks.has(actor.id),
+    pin: (actor, x, y) => {
+      pins.set(actor.id, { actor, x: Math.round(x), y: Math.round(y) })
+    },
+    hasCard: actor => !cardless.has(actor.id),
   }
-  const towerScale = TOWER_SCALES.find(one => slot / one >= TOWER_WIDEST_LINE) ?? TOWER_SCALES[TOWER_SCALES.length - 1] ?? 2
-  const scale = stage.rows === undefined ? bandScale(office, slot) : towerScale
   const width = Math.max(NARROWEST, Math.floor(slot / scale))
-  const height = stage.rows === undefined ? Math.floor(BAND_PIXELS / scale) : Math.max(120, Math.round((stage.rows * CELL_HEIGHT) / scale))
+  const height = stage.rows === undefined ? Math.floor(BAND_PIXELS / scale) : Math.max(SHORTEST, Math.floor(pixels / scale))
   const body = stage.rows === undefined ? bandOf(office, width, height, stage.clock, cast) : towerOf(office, width, height, stage.clock, cast)
+  const carded = [...pins.values()]
+    .filter(pin => cast.hasCard(pin.actor) && marks.has(pin.actor.id))
+    .map(pin => ({ pin, card: cardOf(pin.actor, pin.x, pin.y, cast.mark(pin.actor), width, cast) }))
+    .filter(one => one.card !== '')
+  const shown = carded.map(one => one.pin)
+  const drawnCards = carded.map(one => one.card)
+  const rules = shown.map(pin => `svg:has(.h${cast.mark(pin.actor)}:hover) #c${cast.mark(pin.actor)}{visibility:visible}`)
   const edge = rect(1, 0, width - 2, 1) + rect(1, height - 1, width - 2, 1) + rect(0, 1, 1, height - 2) + rect(width - 1, 1, 1, height - 2)
   const notched = `M1 0H${width - 1}V1H${width}V${height - 1}H${width - 1}V${height}H1V${height - 1}H0V1H1Z`
   // The narrowest scene can be wider than its slot, and it shrinks to fit rather than run off the edge.
@@ -1093,9 +1788,58 @@ export const sceneOf = (office: Office, stage: Stage): { source: string; width: 
   const source =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${drawnWidth}" height="${drawnHeight}" viewBox="0 0 ${width} ${height}" shape-rendering="crispEdges">` +
     `<defs><clipPath id="screen"><path d="${notched}"/></clipPath>${[...defs.values()].join('')}</defs>` +
-    `<g clip-path="url(#screen)">${body}${fill(INK, edge)}</g></svg>`
+    (rules.length === 0 ? '' : `<style>${rules.join('')}</style>`) +
+    `<g clip-path="url(#screen)">${body}${fill(INK, edge)}<g id="cards">${drawnCards.join('')}</g></g></svg>`
 
-  return { source, width: drawnWidth, height: drawnHeight }
+  return {
+    source,
+    width: drawnWidth,
+    height: drawnHeight,
+    seated: marks.size,
+    cards: shown.map((pin, i) => ({
+      id: pin.actor.id,
+      size: (drawnCards[i]?.length ?? 0) + (rules[i]?.length ?? 0),
+      urgency: pin.actor.status === 'failed' ? 0 : pin.actor.status === 'waiting' ? 1 : isWorking(pin.actor) ? 2 : 3,
+    })),
+  }
+}
+
+/**
+ * The office, all of it: one SVG document, and the size in pixels to give its frame, which is 300 by 150 when given none.
+ *
+ * A drawing too big for a surface to take gives things up until it is not: first the cards, those of the agents that
+ * least need looking at before the rest, and then desks, with everyone past them going in the tiny cubicles.
+ */
+export const sceneOf = (office: Office, stage: Stage): { source: string; width: number; height: number } => {
+  let limits: Limits = { cardless: new Set(), seats: office.departments.reduce((sum, one) => sum + one.agents.length, 0) }
+  let drawing = drawnOf(office, stage, limits)
+
+  for (let pass = 0; pass < 8 && drawing.source.length > SOURCE_ROOM; pass += 1) {
+    if (drawing.cards.length > 0) {
+      const cardless = new Set(limits.cardless)
+      let over = drawing.source.length - SOURCE_ROOM
+
+      for (const card of [...drawing.cards].sort((one, other) => other.urgency - one.urgency)) {
+        if (over <= 0) {
+          break
+        }
+
+        cardless.add(card.id)
+        // Less than its whole size comes off: each of its parts now carries the words a tooltip shows.
+        over -= card.size * 0.9
+      }
+
+      limits = { ...limits, cardless }
+    } else if (drawing.seated > FEWEST_SEATS) {
+      limits = { ...limits, seats: Math.max(FEWEST_SEATS, Math.floor(Math.min(limits.seats, drawing.seated) * (SOURCE_ROOM / drawing.source.length) * 0.85)) }
+    } else {
+      break
+    }
+
+    drawing = drawnOf(office, stage, limits)
+  }
+
+  return { source: drawing.source, width: drawing.width, height: drawing.height }
 }
 
 /** A mug with nobody at their desk. It never changes, so it is drawn once and keeps steaming. */
